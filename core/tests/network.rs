@@ -494,9 +494,11 @@ impl Sim {
         let seed = self.seed * 100_000 + 1000 + self.loads;
         // The page saves as it unloads, so the reload restores it all.
         self.devs[k].saved = self.devs[k].app.as_ref().unwrap().snapshot();
+        let invitation = self.devs[k].app.as_ref().unwrap().invitation.clone();
         let d = &mut self.devs[k];
         let mut fresh = app(seed);
-        fresh.on_packet(&d.saved, 0);
+        if let Some(i) = invitation { fresh.load_invite(&i.room, &i.json()).unwrap(); }
+        assert!(fresh.restore(&d.saved, PROTOCOL as u32));
         packets(&mut fresh); // restoring a save raises nothing worth keeping
         d.app = Some(fresh);
         d.online = true;
@@ -593,6 +595,9 @@ struct Coverage {
     reloads: u32,
     partitions: u32,
     finished: u32,
+    /// Unfinished runs with fewer than two distinct players left. A
+    /// reserved writer can submit late, but cannot guess their own clover.
+    alone: u32,
     /// The largest table seen, in bytes.
     biggest: usize,
     /// Notices by kind, and in how many runs each kind occurred.
@@ -816,6 +821,21 @@ fn run(seed: u64, rough: Rough, story: Story, cov: &mut Coverage) {
             s.heal();
         }
     }
+    // Reserved writers may still be finishing while the table guesses.
+    // Add their clovers when another person remains to guess them; a lone
+    // writer needn't reopen an otherwise finished round with their own.
+    let remaining: BTreeSet<u32> = live.iter().filter_map(|&k| s.devs[k].app.as_ref().unwrap().seat).collect();
+    if remaining.len() > 1 {
+        for &k in &live {
+            let a = s.devs[k].app.as_mut().unwrap();
+            if a.can_write() {
+                a.action(cloverleaf::app::ACT_WRITE);
+                for d in 0..4 { a.set_clue(d, "clue", false); }
+                if !a.shared.is_ready(a.seat.unwrap()) { a.action(2); }
+            }
+        }
+    }
+    s.heal();
     for _ in 0..12 {
         let phase = s.devs[a0].app.as_ref().unwrap().shared.phase();
         let Phase::Guessing(_) = phase else { break };
@@ -853,6 +873,7 @@ fn run(seed: u64, rough: Rough, story: Story, cov: &mut Coverage) {
         s.fail(&format!("the round could not be played to its end (stuck in {phase:?}): {detail:?} {writing}"));
     }
     cov.finished += (phase == Phase::End) as u32;
+    cov.alone += (phase != Phase::End && only_writer) as u32;
     let d0 = s.digest_of(live[0]);
     if live.iter().any(|&k| s.digest_of(k) != d0) {
         s.fail("devices disagree at the end of the round");
@@ -882,17 +903,17 @@ fn strip_lie(a: &App) -> Option<String> {
             return Some(format!("{first:?} but still writing: {want:?}"));
         }
     }
-    if st.alt.is_some() && bold.is_empty() && !st.pulse {
+    if st.alt.as_ref().is_some_and(|b| b.act == "proceed") && bold.is_empty() && !st.pulse {
         return Some(format!("offers {:?} without saying who is missing ({first:?})", st.alt));
     }
-    if let Phase::Guessing(k) = sh.phase() {
+    if let Phase::Guessing(k) = a.view_phase() {
         let w = sh.puzzles()[k];
         let named = format!("{}'s", a.short_name(w));
         if !st.pulse && Some(w) != a.seat && first.contains("clover") && bold.first() != Some(&named) {
             return Some(format!("{first:?} but the clover on the board is {named}"));
         }
     }
-    let waiting = match sh.phase() {
+    let waiting = match a.view_phase() {
         Phase::Writing => me_ready || !in_round,
         Phase::Guessing(k) => a.seat == Some(sh.puzzles()[k]) && !sh.check(sh.puzzles()[k]).done(),
         _ => false,
@@ -966,7 +987,7 @@ fn edit(a: &mut App, d: u8, w: &str) {
 /// and submit, Proceed, solve and guess, or move to the next clover.
 fn play_on(a: &mut App) {
     let me = a.seat;
-    match a.shared.phase() {
+    match a.view_phase() {
         Phase::Lobby | Phase::End => a.action(1),
         Phase::Writing => match me {
             Some(me) if a.shared.round_players().contains(&me) && !a.shared.is_ready(me) => {
@@ -1137,14 +1158,16 @@ fn need(ok: bool, why: &str) -> Result<(), String> {
 #[test]
 fn the_table_survives_a_calm_but_flaky_network() {
     family(Story::Everyday, CALM, 0, 150, |c| {
-        need(c.reloads > 150 && c.partitions > 80 && c.guessing_reached > 100 && c.finished > 140, "everyday play under faults")
+        need(c.reloads > 150 && c.partitions > 80 && c.guessing_reached > 100
+            && c.finished >= 140 && c.finished + c.alone == c.runs, "everyday play under faults; every playable table finishes")
     });
 }
 
 #[test]
 fn the_table_survives_a_stormy_network() {
     family(Story::Everyday, STORMY, 10_000, 150, |c| {
-        need(c.reloads > 600 && c.partitions > 300 && c.guessing_reached > 100 && c.finished > 140, "everyday play under heavy faults")
+        need(c.reloads > 600 && c.partitions > 300 && c.guessing_reached > 100
+            && c.finished >= 140 && c.finished + c.alone == c.runs, "everyday play under heavy faults; every playable table finishes")
     });
 }
 
@@ -1196,6 +1219,153 @@ fn story_long_session() {
 #[test]
 fn story_version_skew() {
     family(Story::VersionSkew, CALM, 90_000, 40, |c| need(c.outdated_runs >= c.runs * 3 / 4, "a page hearing a newer protocol"));
+}
+
+/// Group invites: nobody overlaps at first; then subsets meet, reload and
+/// split before the full group meets. Coverage requires every run to have
+/// independent submissions, reloads, a partition, and every clover preserved.
+#[test]
+fn story_invited_group_arrives_separately() {
+    let (mut runs, mut alone, mut reloads, mut partitioned, mut finished) = (0, 0, 0, 0, 0);
+    for seed in seeds(110_000, 40) {
+        let n = 3 + (seed % 3) as usize;
+        let mut s = Sim::new(seed, n, STORMY);
+        let input = format!("{{\"room\":\"meet-later\",\"name\":\"Ann\",\"friends\":{}}}", json_str(&NAMES[1..n].join("\n")));
+        let i = cloverleaf::invite::Invite::create(&input, Stamp { clock: 1, peer: seed as u32 }, seed as u32).unwrap();
+        for x in 0..n { for y in x + 1..n { s.blocked.insert(pair(x, y)); } }
+        // Different arrival orders, with each person's own complete draft.
+        for offset in 0..n {
+            let k = (offset + seed as usize) % n;
+            s.devs[k].name = Some(NAMES[k].into());
+            let a = s.devs[k].app.as_mut().unwrap();
+            a.load_invite(&i.room, &i.json()).unwrap();
+            a.join(NAMES[k]);
+            for d in 0..4 { a.set_clue(d, &format!("{seed}-{k}-{d}"), false); }
+            if k != n - 1 { a.action(2); alone += 1; }
+            s.tick();
+            assert_eq!(s.devs[k].app.as_ref().unwrap().shared.phase(), Phase::Writing);
+            s.reload(k);
+            reloads += 1;
+        }
+        s.run_for(100); // re-take saved identities, with every link still blocked
+        s.blocked.clear();
+        s.split(n / 2);
+        s.run_for(100);
+        partitioned += 1;
+        // Peers meet in groups through jitter and lost connections; no one
+        // can guess before the final writer submits and the groups meet.
+        for _ in 0..100 {
+            if s.r.below(8) == 0 { let k = s.r.below(n); s.drop_all_links(k); }
+            s.reconnect_some(120);
+            s.tick();
+        }
+        for (_, a) in s.apps() { assert_eq!(a.shared.phase(), Phase::Writing); }
+        s.devs[n - 1].app.as_mut().unwrap().action(2);
+        s.heal_for(600);
+        let expected = s.digest_of(0);
+        for k in 0..n {
+            let a = s.devs[k].app.as_ref().unwrap();
+            assert_eq!(s.digest_of(k), expected);
+            assert_eq!(a.shared.round, i.round);
+            assert_eq!(a.shared.puzzles().len(), n);
+            for w in 0..n { for d in 0..4 {
+                assert_eq!(a.shared.effective(seat_id(NAMES[w])).unwrap().clues[d], format!("{seed}-{w}-{d}"));
+            } }
+            if let Some(why) = &s.devs[k].strip_bad { s.fail(why); }
+        }
+        for _ in 0..n {
+            let writer = s.devs[0].app.as_ref().unwrap().scene().writer.unwrap();
+            let g = (0..n).find(|k| seat_id(NAMES[*k]) != writer).unwrap();
+            solve(s.devs[g].app.as_mut().unwrap());
+            s.devs[g].app.as_mut().unwrap().action(3);
+            s.heal();
+            s.devs[g].app.as_mut().unwrap().action(4);
+            s.heal();
+        }
+        assert!(s.apps().all(|(_, a)| a.shared.phase() == Phase::End));
+        finished += 1;
+        runs += 1;
+    }
+    if std::env::var("SEED").is_err() {
+        assert!(runs >= 40 && alone >= 2 * runs && reloads >= 3 * runs && partitioned == runs && finished == runs,
+            "invites: {runs} runs, {alone} independent submissions, {reloads} reloads, {partitioned} partitions, {finished} completed");
+    }
+}
+
+/// A subset starts and solves a clover before two reserved players arrive:
+/// one with an offline submission, one who writes after seeing guessing.
+/// Reloads and jitter must preserve the current board and completed checks.
+#[test]
+fn story_invited_subset_guesses_before_late_writers_arrive() {
+    let (mut runs, mut resumed, mut late_submitted, mut finished) = (0, 0, 0, 0);
+    for seed in seeds(120_000, 40) {
+        let mut s = Sim::new(seed, 4, STORMY);
+        let input = format!("{{\"room\":\"partial-group\",\"name\":\"Ann\",\"friends\":{}}}", json_str(&NAMES[1..4].join("\n")));
+        let i = cloverleaf::invite::Invite::create(&input, Stamp { clock: 1, peer: seed as u32 }, seed as u32).unwrap();
+        for x in 0..4 { for y in x + 1..4 { if (x, y) != (1, 2) { s.blocked.insert((x, y)); } } }
+        for k in 0..4 {
+            s.devs[k].name = Some(NAMES[k].into());
+            let a = s.devs[k].app.as_mut().unwrap();
+            a.load_invite(&i.room, &i.json()).unwrap();
+            a.join(NAMES[k]);
+            if k > 0 {
+                for d in 0..4 { a.set_clue(d, &format!("{seed}-{k}"), false); }
+                a.action(2);
+            }
+        }
+        for _ in 0..150 { s.reconnect_some(1000); s.tick(); }
+        assert_eq!(s.devs[1].app.as_ref().unwrap().shared.phase(), Phase::Writing);
+        s.devs[1].app.as_mut().unwrap().action(5);
+        s.run_for(150);
+        assert_eq!(s.devs[2].app.as_ref().unwrap().scene().writer, Some(seat_id(NAMES[1])));
+        solve(s.devs[2].app.as_mut().unwrap());
+        s.devs[2].app.as_mut().unwrap().action(3);
+        s.run_for(150);
+        assert!(s.devs[1].app.as_ref().unwrap().shared.check(seat_id(NAMES[1])).done());
+        s.devs[1].app.as_mut().unwrap().action(4);
+        s.run_for(150);
+        let current = s.devs[1].app.as_ref().unwrap().scene().writer;
+        assert_eq!(current, Some(seat_id(NAMES[2])));
+        s.reload(1);
+        s.heal_for(600);
+        resumed += 1;
+        assert_eq!(s.devs[1].app.as_ref().unwrap().scene().writer, current);
+        assert_eq!(s.devs[0].app.as_ref().unwrap().view_phase(), Phase::Writing);
+        assert_eq!(s.devs[3].app.as_ref().unwrap().scene().writer, current);
+        for d in 0..2 { s.devs[0].app.as_mut().unwrap().set_clue(d, "late draft", false); }
+        s.reload(0);
+        s.heal_for(200);
+        for d in 2..4 { s.devs[0].app.as_mut().unwrap().set_clue(d, "late draft", false); }
+        s.devs[0].app.as_mut().unwrap().action(2);
+        s.heal_for(400);
+        late_submitted += 1;
+        let expected = s.digest_of(0);
+        for (k, a) in s.apps() {
+            assert_eq!(s.digest_of(k), expected);
+            assert_eq!(a.scene().writer, current);
+            assert_eq!(a.shared.round, i.round);
+            assert_eq!(a.shared.puzzles().len(), 4);
+            assert!(a.shared.check(seat_id(NAMES[1])).done());
+            assert_eq!(a.shared.effective(seat_id(NAMES[0])).unwrap().clues, ["late draft".to_string(), "late draft".into(), "late draft".into(), "late draft".into()]);
+            if let Some(why) = &s.devs[k].strip_bad { s.fail(why); }
+        }
+        for _ in 0..3 {
+            let writer = s.devs[0].app.as_ref().unwrap().scene().writer.unwrap();
+            let g = (0..4).find(|k| seat_id(NAMES[*k]) != writer).unwrap();
+            solve(s.devs[g].app.as_mut().unwrap());
+            s.devs[g].app.as_mut().unwrap().action(3);
+            s.heal();
+            s.devs[g].app.as_mut().unwrap().action(4);
+            s.heal();
+        }
+        assert!(s.apps().all(|(_, a)| a.shared.phase() == Phase::End));
+        finished += 1;
+        runs += 1;
+    }
+    if std::env::var("SEED").is_err() {
+        assert!(runs >= 40 && resumed == runs && late_submitted == runs && finished == runs,
+            "late arrivals: {runs} runs, {resumed} resumes, {late_submitted} late submissions, {finished} finished");
+    }
 }
 
 // ---- the bugs the random runs found, as fixed scenarios ------------------------

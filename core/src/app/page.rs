@@ -26,6 +26,8 @@ pub const ACT_NEXT: u32 = 4;
 pub const ACT_PROCEED: u32 = 5;
 pub const ACT_REDEAL: u32 = 6;
 pub const ACT_NEW_GAME: u32 = 7;
+pub const ACT_WRITE: u32 = 8;
+pub const ACT_JOIN_GUESSING: u32 = 9;
 
 /// Marks around text the shell shows in bold (a name).
 pub const BOLD_ON: char = '\u{1}';
@@ -114,7 +116,7 @@ impl App {
 
     pub fn strip(&self) -> Strip {
         let s = &self.shared;
-        let phase = s.phase();
+        let phase = self.view_phase();
         let n = s.puzzles().len();
         let seated = self.seat.is_some_and(|me| s.players().contains(&me));
         let (k, writer) = match phase {
@@ -192,7 +194,11 @@ impl App {
                         st.hint = [vec![format!("Submitted · waiting for {who}")], waiting.clone()].concat();
                     }
                     st.decoys = in_round && filled >= 4;
-                    if (sub.ready || !in_round) && ready > 0 && ready < round.len() {
+                    if s.start.is_some() && self.can_write() {
+                        st.hint = vec![format!("Add your clover · {filled} of 4 clues written"), format!("Your clover · {filled} of 4 clues")];
+                        st.go = button("Add my clover", self.can_ready(), "ready");
+                        st.alt = button("Guess with group", true, "joinGuessing");
+                    } else if (sub.ready || !in_round) && ready > 0 && ready < round.len() {
                         // The status beside it names who is missing, so the button needn't.
                         st.alt = button("Start anyway", true, "proceed");
                         st.hint = if sub.ready { waiting } else { [vec![format!("You're in next round · waiting for {who}")], waiting].concat() };
@@ -207,7 +213,7 @@ impl App {
                 }
                 Phase::Guessing(_) if done => {
                     st.hint = vec![solved];
-                    st.go = button(if k + 1 < n { "Next clover" } else { "Finish round" }, true, "next");
+                    st.go = button(if s.next_unsolved(k) < n { "Next clover" } else { "Finish round" }, true, "next");
                 }
                 Phase::Guessing(_) if is_writer => st.hint = vec!["They're guessing your clover".into()],
                 Phase::Guessing(_) => {
@@ -220,21 +226,30 @@ impl App {
                 }
             }
         }
+        if s.start.is_some() && phase != Phase::Writing && self.can_write() {
+            st.alt = button("Write my clover", true, "write");
+        }
         if matches!(phase, Phase::Guessing(_)) && !(is_writer && !done) && (self.solo || seated) {
             st.tip = Some("guess");
         }
         // Not connected to anyone: say so rather than look normal while broken.
-        if !self.solo && self.links == 0 {
+        if !self.solo && self.links == 0 && !(self.invitation.is_some() && phase == Phase::Writing && seated) {
             st.pulse = true;
             let others = s.players().iter().any(|&p| Some(p) != self.seat);
             st.hint = vec![if others { "Reconnecting to the table…" } else { "Waiting for others" }.into()];
+        }
+        // While writing from an invite, being alone is expected. Keep the
+        // useful writing/waiting status, and keep the chosen identity visible.
+        if self.invitation.is_some() && phase == Phase::Writing && seated {
+            let name = self.short_name(self.seat.unwrap());
+            st.hint = st.hint.iter().map(|h| format!("{name} · {h}")).collect();
         }
         st.tap = match phase {
             Phase::Guessing(_) if n > 1 => Some("clovers"),
             Phase::End if n > 0 => Some("recap"),
             _ => None,
         };
-        st.invite = !self.solo && (phase == Phase::Lobby || self.links == 0);
+        st.invite = !self.solo && (phase == Phase::Lobby || self.links == 0 || (self.invitation.is_some() && phase == Phase::Writing && s.start.is_none()));
         st.tip = st.tip.filter(|_| seated || self.solo);
         // Guessing on a wide screen: Guess (and Next clover after it) sits by
         // the clover, a short reach from the cards.
@@ -292,6 +307,25 @@ impl App {
         let present = self.present();
         let color = |p: u32| s_(&format!("#{:06x}", self.color_of(p) >> 8));
         let v = match kind {
+            SHEET_JOIN if self.invitation.is_some() => {
+                let invite = self.invitation.as_ref().unwrap();
+                let rows = invite.names.iter().map(|name| {
+                    let p = seat_id(name);
+                    let here = present.contains(&p) && Some(p) != me;
+                    let note = if Some(p) == me { "You on this device" } else if here { "Already here · switch devices" }
+                        else if s.is_ready(p) { "Clues submitted" } else { "Open your clover" };
+                    obj(vec![
+                        ("name", s_(name)), ("label", s_(&format!("I'm {name}"))), ("note", s_(note)),
+                        ("confirm", if here { s_(&format!("{name} is already playing on another device. Only continue if you are {name}.")) } else { Json::Null }),
+                        ("confirmLabel", s_(&format!("Yes, I'm {name}"))),
+                    ])
+                }).collect();
+                obj(vec![
+                    ("invited", Json::Bool(true)), ("heading", s_("Who are you?")),
+                    ("intro", s_(&format!("Choose your name from the {} players below. Everyone has a different clover.", invite.names.len()))),
+                    ("rows", Json::Arr(rows)),
+                ])
+            }
             // Joining: the players you could continue as (taking over a seat).
             SHEET_JOIN => {
                 let rows: Vec<Json> = s
@@ -322,6 +356,7 @@ impl App {
                             Phase::Writing if !s.round.players().contains(&p) => "in the next round",
                             Phase::Writing if s.is_ready(p) => "submitted",
                             Phase::Writing => "writing",
+                            _ if s.round.custom == 0 && s.round.players().contains(&p) && !s.is_ready(p) => "still writing",
                             Phase::Guessing(_) if writer == Some(p) => "their clover is up",
                             _ => "here",
                         };
@@ -413,12 +448,17 @@ impl App {
         (text, action)
     }
 
-    /// A table saved on this device, from `version` of the protocol and
-    /// `age_ms` old: merged in like any other sync (so a stale save can't
-    /// undo newer moves) if it's from this version and recent enough.
-    pub fn restore(&mut self, bytes: &[u8], version: u32, age_ms: f64) -> bool {
-        if version != PROTOCOL as u32 || !(0.0..SAVE_TTL_MS).contains(&age_ms) {
+    /// Saves never expire. Merge them like any other sync, so older saves
+    /// cannot undo newer moves. A group invite also binds the save to its
+    /// original table identity (including later rounds and New games).
+    pub fn restore(&mut self, bytes: &[u8], version: u32) -> bool {
+        if !(MIN_PROTOCOL as u32..=PROTOCOL as u32).contains(&version) {
             return false;
+        }
+        if let Some(i) = &self.invitation {
+            if !decode(bytes).iter().any(|m| matches!(m, Msg::Op(op) if op.round.table == i.round.table)) {
+                return false;
+            }
         }
         self.on_packet(bytes, 0);
         true
@@ -431,6 +471,3 @@ fn obj(kv: Vec<(&str, Json)>) -> Json {
 fn s_(x: &str) -> Json {
     Json::str_of(x)
 }
-
-/// How long a save on this device stays good for restoring a table.
-pub const SAVE_TTL_MS: f64 = 6.0 * 3600e3;

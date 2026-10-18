@@ -6,7 +6,7 @@ import { agentTools, offerTools } from './agent.js';
 const params = new URLSearchParams(location.search);
 // No room in the link (and no shared boards): the home page, listing this
 // device's tables and past games, with a button to start a new table.
-const home = !location.hash.slice(1) && !params.has('b');
+const home = !location.hash.slice(1) && !params.has('b') && !params.has('i');
 const roomId = decodeURIComponent(location.hash.slice(1));
 // Fault tests (?chaos): `cut` silences this page both ways while its
 // connections stay up (a phone in a tunnel); `delayMs` lags what arrives.
@@ -15,7 +15,7 @@ const chaos = params.has('chaos') ? { cut: false, delayMs: 0 } : null;
 const $ = (id) => document.getElementById(id);
 const canvas = $('c'), ctx = canvas.getContext('2d'), clueInput = $('clue');
 const enc = new TextEncoder(), dec = new TextDecoder();
-const remember = (key, value) => { try { value == null ? localStorage.removeItem(key) : localStorage.setItem(key, value); } catch {} };
+const remember = (key, value) => { try { value == null ? localStorage.removeItem(key) : localStorage.setItem(key, value); return true; } catch { return false; } };
 const recall = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
 
 const { instance } = await WebAssembly.instantiateStreaming(fetch('core.wasm'), {});
@@ -295,7 +295,7 @@ addEventListener('keydown', (e) => {
   if (e.key === 'e' || e.key === ' ') X.rotate_view(1);
 });
 // What the buttons do, by name (the Rust core's ACT_ codes).
-const ACT = { deal: 1, ready: 2, check: 3, next: 4, proceed: 5, redeal: 6, newGame: 7 };
+const ACT = { deal: 1, ready: 2, check: 3, next: 4, proceed: 5, redeal: 6, newGame: 7, write: 8, joinGuessing: 9 };
 const act = (name) => { stats.presses++; X.action(ACT[name]); drainOutbox(); renderUi(true); };
 
 let editing = -1;
@@ -460,6 +460,7 @@ function joinAs(name) {
   remember(NAME, name);
   noteTable(name);
   closeSheets();
+  pendingSeat = null;
   renderUi(true);
 }
 function watch() {
@@ -470,25 +471,56 @@ function watch() {
   renderUi(true);
 }
 const closeSheets = () => document.querySelectorAll('.overlay').forEach((o) => o.classList.remove('open'));
-function openJoin() {
-  const s = ui(), j = sheet('join');
+let pendingSeat = null, lastJoin = '';
+function renderJoin(force = false) {
+  const j = sheet('join'), key = JSON.stringify(j);
+  if (!force && lastJoin === key) return;
+  lastJoin = key;
+  const invited = !!j.invited;
+  $('joinSheet').classList.toggle('invited', invited);
+  $('inviteJoinHead').hidden = !invited;
+  for (const id of ['joinTableField', 'joinNameField', 'joinAdvice', 'joinSubmit']) $(id).hidden = invited;
+  $('seatList').hidden = !!pendingSeat;
+  $('seatConfirm').hidden = !pendingSeat;
+  $('inviteJoinTitle').textContent = invited ? j.heading : '';
+  $('inviteJoinIntro').textContent = j.intro ?? '';
   $('seatList').replaceChildren(
-    ...(j.heading ? [Object.assign(document.createElement('p'), { textContent: j.heading })] : []),
+    ...(!invited && j.heading ? [Object.assign(document.createElement('p'), { textContent: j.heading })] : []),
     ...j.rows.map((p) => {
       const b = document.createElement('button');
-      b.type = 'button'; b.className = 'menuBtn';
-      b.innerHTML = `<span class="chip${p.away ? ' away' : ''}"><i style="background:${esc(p.color)}"></i>${esc(p.name)}</span>${p.note ? ` <small>${esc(p.note)}</small>` : ''}`;
-      b.onclick = () => joinAs(p.name);
+      b.type = 'button'; b.className = invited ? 'inviteSeat' : 'menuBtn';
+      b.innerHTML = invited ? `<strong>${esc(p.label)}</strong><small>${esc(p.note)}</small>`
+        : `<span class="chip${p.away ? ' away' : ''}"><i style="background:${esc(p.color)}"></i>${esc(p.name)}</span>${p.note ? ` <small>${esc(p.note)}</small>` : ''}`;
+      b.onclick = () => {
+        // Re-read presence at the moment of the click: someone may have
+        // arrived since this row was drawn.
+        const choice = sheet('join').rows.find((r) => r.name === p.name);
+        if (choice?.confirm) {
+          pendingSeat = p.name;
+          $('seatConfirmText').textContent = choice.confirm;
+          $('seatConfirmJoin').textContent = choice.confirmLabel;
+          renderJoin(true);
+          $('seatChooseAnother').focus();
+        } else joinAs(p.name);
+      };
       return b;
     }));
+}
+function openJoin() {
+  const s = ui();
+  pendingSeat = null;
+  renderJoin(true);
   $('tableInput').value = roomId;
   $('nameInput').value = s.name ?? recall(nameKey) ?? myName();
   $('joinSheet').classList.add('open');
   // A remembered name means one tap on Join; only an empty one needs typing.
-  if (!$('nameInput').value) setTimeout(() => $('nameInput').focus(), 50);
+  if (!$('joinNameField').hidden && !$('nameInput').value) setTimeout(() => $('nameInput').focus(), 50);
 }
+$('seatConfirmJoin').onclick = () => { if (pendingSeat) joinAs(pendingSeat); };
+$('seatChooseAnother').onclick = () => { pendingSeat = null; renderJoin(true); };
 $('joinForm').onsubmit = (e) => {
   e.preventDefault();
+  if (sheet('join').invited) return; // invited names are chosen explicitly
   stats.presses++;
   // Editing the table name switches tables (joining that one instead).
   const room = normRoom($('tableInput').value);
@@ -500,7 +532,7 @@ $('menuBtn').onclick = () => {
   const s = ui();
   renderHappened();
   $('unsubmitBtn').hidden = !s.menu.unsubmit;
-  $('linkText').textContent = location.href;
+  $('linkText').textContent = tableUrl(roomId);
   // Everyone at the table, by name, with what they're up to.
   const who = sheet('players');
   $('playerList').replaceChildren(...who.rows.map((p) => {
@@ -523,12 +555,12 @@ $('menuBtn').onclick = () => {
 };
 $('closeMenu').onclick = closeSheets;
 document.querySelectorAll('.overlay').forEach((o) => o.addEventListener('click', (e) => {
-  if (e.target !== o || o.id === 'homeSheet') return;
+  if (e.target !== o || ['homeSheet', 'inviteErrorSheet'].includes(o.id) || (o.id === 'joinSheet' && sheet('join').invited)) return;
   closeSheets();
   if (home) openHome();
 }));
 $('copyLink').onclick = async () => {
-  try { await navigator.clipboard.writeText(location.href); toast('Invite link copied'); }
+  try { await navigator.clipboard.writeText(tableUrl(roomId)); toast('Invite link copied'); }
   catch { getSelection().selectAllChildren($('linkText')); toast('Select the link above and copy it'); }
 };
 $('switchBtn').onclick = () => { closeSheets(); openJoin(); };
@@ -616,13 +648,20 @@ function renderUi(force = false) {
   const key = JSON.stringify(s);
   if (!force && key === lastUi) return;
   lastUi = key;
+  if ($('joinSheet').classList.contains('open')) renderJoin();
 
   // The strip as the Rust core words it (see app/page.rs): this only
   // shows it. Side effects of the page's own stay here: tips once per
   // device, and the recap opening once by itself when a round ends.
   const st = s.strip;
   if (st.tip) tip(st.tip);
-  if (!home && s.phase === 'end' && recapShown !== s.round) { recapShown = s.round; setTimeout(openRecap, 600); }
+  if (s.phase !== 'end' && recapShown === s.round) {
+    $('recapSheet').classList.remove('open');
+    recapShown = null;
+  }
+  if (!home && s.phase === 'end' && recapShown !== s.round && (!invitePayload || s.seated || recall(nameKey) === '')) {
+    recapShown = s.round; setTimeout(() => { if (ui().phase === 'end' && ui().round === s.round) openRecap(); }, 600);
+  }
   // Submission progress: a thin bar along the top of the strip.
   const segs = $('segs');
   segs.hidden = !st.segs;
@@ -714,7 +753,7 @@ function openClovers() {
 $('cloverClose').onclick = closeSheets;
 $('invite').onclick = async () => {
   stats.presses++;
-  const url = location.href.replace(/[?&]fresh\b[^&#]*/, '');
+  const url = tableUrl(roomId);
   try {
     if (navigator.share) return await navigator.share({ title: 'Shamrock', text: 'Join my Shamrock table', url });
   } catch (e) { if (e?.name === 'AbortError') return; }
@@ -734,20 +773,24 @@ const normRoom = (t) => scratchText(X.norm_room(writeText(t)));
 const NAME = 'shamrock:name';
 const myName = () => recall(NAME) ?? myTables().name ?? '';
 /** Go to `room` as `name`: remembered for that table, so it joins on arrival. */
-function startAt(room, name) {
+function startAt(room, name, invite) {
   name = name.trim();
   if (name) { remember(NAME, name); remember(`shamrock:${room}:name`, name); }
-  goTo(room);
+  goTo(room, invite);
 }
 // Links to other tables keep the network this page is on (a private
 // signaling relay, a relay list, test switches), and nothing else.
 const NET_PARAMS = ['signal', 'relays', 'net', 'rejoin', 'chaos'];
 const netQuery = () => { const q = new URLSearchParams(NET_PARAMS.filter((k) => params.has(k)).map((k) => [k, params.get(k)])).toString(); return q ? `?${q}` : ''; };
-const tableUrl = (room) => `${location.origin}${location.pathname}${netQuery()}${room ? `#${room}` : ''}`;
+const tableUrl = (room, invite = room === roomId ? invitePayload : recall(`shamrock:${room}:invite`)) => {
+  const q = new URLSearchParams(netQuery());
+  if (room && invite) q.set('i', invite);
+  return `${location.origin}${location.pathname}${q.size ? `?${q}` : ''}${room ? `#${room}` : ''}`;
+};
 // The page is one table (or the home page) for its whole life: when the
 // #room changes, as with Back/Forward between the home page and a table,
 // start over as whatever the address now says.
-const goTo = (room) => { location.href = tableUrl(room); };
+const goTo = (room, invite) => { location.href = tableUrl(room, invite); };
 addEventListener('hashchange', () => { if (decodeURIComponent(location.hash.slice(1)) !== roomId) location.reload(); });
 const when = (t) => (t ? new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'earlier');
 function noteTable(name) {
@@ -773,6 +816,7 @@ function forgetTable(room) {
   remember(TABLES, JSON.stringify(t));
   remember(`shamrock:${room}:name`, null);
   remember(`shamrock:${room}:state`, null);
+  remember(`shamrock:${room}:invite`, null);
 }
 /** Keep a finished round's clovers (answers included) on this device. */
 /** Keep (or update) a round in Past games, by its key (table and round).
@@ -922,10 +966,25 @@ function openHome() {
   $('homeSheet').classList.add('open');
 }
 $('homeReroll').onclick = () => { $('homeRoom').value = suggestRoom(); };
+$('homePlan').onchange = () => {
+  $('inviteSetup').hidden = !$('homePlan').checked;
+  $('homeNew').hidden = $('homePlan').checked;
+  $('homeInvite').hidden = !$('homePlan').checked;
+  $('homeError').hidden = true;
+};
 $('homeForm').onsubmit = (e) => {
   e.preventDefault();
+  if ($('homePlan').checked) {
+    const i = scratchJson(X.create_invite(writeText(JSON.stringify({ room: $('homeRoom').value, name: $('homeName').value, friends: $('homeFriends').value }))));
+    if (i.error) { $('homeError').textContent = i.error; $('homeError').hidden = false; return; }
+    const payload = b64.enc(enc.encode(JSON.stringify(i)));
+    remember(`shamrock:${i.room}:invite`, payload);
+    try { sessionStorage.setItem('shamrock:fresh', i.room); } catch {}
+    return startAt(i.room, i.names[0], payload);
+  }
   startAt(normRoom($('homeRoom').value) || suggestRoom(), $('homeName').value);
 };
+$('inviteErrorHome').onclick = () => goTo('');
 $('homeLog').onclick = openLog;
 $('logClose').onclick = () => { closeSheets(); if (home) openHome(); };
 $('logMenuBtn').onclick = openLog;
@@ -1002,20 +1061,42 @@ const REJOIN_FIRST_MS = +(params.get('rejoin') ?? 12000);
 // The whole table is saved here (every couple of seconds while it changes,
 // and as the page goes away) and restored on load, so a table survives even
 // if every device that held it reloads. A stale save merges like any other
-// sync, so it can't undo newer moves. Saves older than a few hours are
-// ignored: a table name reused another day starts fresh.
+// sync, so it can't undo newer moves. Saves are restored regardless of
+// age. Starting over is an explicit New game.
+let invitePayload = null, inviteError = '';
+if (!solo && !home) {
+  const payload = params.get('i') ?? recall(`shamrock:${roomId}:invite`);
+  if (payload !== null) {
+    try {
+      if (payload.length > 6000) throw new Error('oversize');
+      inviteError = coreText(X.load_invite, [roomId, dec.decode(b64.dec(payload))]);
+      if (!inviteError) {
+        invitePayload = payload;
+        remember(`shamrock:${roomId}:invite`, payload);
+      }
+    } catch { inviteError = 'This invite is damaged. Ask for the original link.'; }
+  }
+}
 const stateKey = `shamrock:${roomId}:state`;
-let savedState = '';
+let savedState = '', saveWarning = false;
 function saveTable() {
   // The snapshot first: it replaces the scratch buffer, which may move.
   const s = b64.enc(scratchBytes(X.snapshot()));
-  if (s !== savedState) { savedState = s; remember(stateKey, JSON.stringify({ at: Date.now(), v: X.protocol(), s })); }
+  if (s !== savedState) {
+    if (remember(stateKey, JSON.stringify({ at: Date.now(), v: X.protocol(), s }))) {
+      savedState = s;
+      saveWarning = false;
+    } else if (!saveWarning) {
+      toast("This browser couldn't save your game. Keep this tab open until you've connected with the others.", 20000);
+      saveWarning = true;
+    }
+  }
 }
-if (!solo && !home) {
+if (!solo && !home && !inviteError) {
   const kept = readJson(stateKey, null);
-  // The core decides whether the save is still good (recent, this version).
+  // The core checks the version and merges without any age cutoff.
   if (kept?.s) {
-    try { if (X.restore(writeInbox(b64.dec(kept.s)), kept.v ?? 0, Date.now() - kept.at)) savedState = kept.s; } catch {}
+    try { if (X.restore(writeInbox(b64.dec(kept.s)), kept.v ?? 0)) savedState = kept.s; } catch {}
   }
   setInterval(saveTable, 2000);
   addEventListener('pagehide', saveTable);
@@ -1023,11 +1104,14 @@ if (!solo && !home) {
 }
 
 // Solo play (a share link) never connects to anyone.
-if (!solo && !home) connect().then((n) => { net = n; }, (e) => toast(`Can't connect: ${e.message}`, 10000));
+if (!solo && !home && !inviteError) connect().then((n) => { net = n; }, (e) => toast(`Can't connect: ${e.message}`, 10000));
 
 // Returning to this room re-takes your seat; a first visit asks. Wait a
 // moment first so we've heard the table's state (and existing names).
-if (home) {
+if (inviteError) {
+  $('inviteErrorText').textContent = inviteError;
+  $('inviteErrorSheet').classList.add('open');
+} else if (home) {
   document.body.classList.add('home');
   openHome();
 } else if (solo) {
@@ -1040,7 +1124,8 @@ if (home) {
 } else {
   const saved = params.has('fresh') ? null : recall(nameKey);
   if (saved) noteTable(saved);
-  if (saved) setTimeout(() => joinAs(saved), 1500);
+  if (saved && (!invitePayload || sheet('join').rows.some((p) => p.name === saved))) setTimeout(() => joinAs(saved), 1500);
+  else if (saved && invitePayload) setTimeout(openJoin, 900);
   else if (saved === null) setTimeout(() => { if (!ui().seated) openJoin(); }, 900);
 }
 // Just split off to this fresh table: say where we are and offer the invite.

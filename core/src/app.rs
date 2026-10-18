@@ -322,10 +322,15 @@ pub struct App {
     /// Colours for the current theme (display only, per device).
     pub pal: &'static Palette,
     pub shared: Shared,
+    /// The immutable starting deal carried by this room's group invite.
+    /// Local metadata: all shared state still uses ordinary round/seat ops.
+    pub invitation: Option<crate::invite::Invite>,
     /// This device (Lamport tie-break, presence).
     pub device: u32,
     /// The seat this device plays, if any (None = watching).
     pub seat: Option<u32>,
+    /// A late writer can help guess, then return to their unfinished clover.
+    guessing_with_group: bool,
     clock: u64,
     rng: Rng,
     /// Target view rotation in quarter turns (local only).
@@ -407,8 +412,10 @@ impl App {
         let device = (rng.next() as u32).max(1);
         App {
             shared: Shared::default(),
+            invitation: None,
             device,
             seat: None,
+            guessing_with_group: false,
             clock: 0,
             rng,
             q: 0,
@@ -463,6 +470,26 @@ impl App {
     fn stamp(&mut self) -> Stamp {
         self.clock += 1;
         Stamp { clock: self.clock, peer: self.device }
+    }
+
+    /// Prepare one invite for the whole group; no game is changed here.
+    pub fn create_invite(&mut self, input: &str) -> String {
+        let stamp = self.stamp();
+        let seed = self.rng.next() as u32;
+        match crate::invite::Invite::create(input, stamp, seed) {
+            Ok(i) => i.json(),
+            Err(e) => format!("{{\"error\":{}}}", json_str(&e)),
+        }
+    }
+
+    /// Seed before restoring a local save or connecting to peers. Reopening
+    /// the original invite merges its old ops, so it cannot reset progress.
+    pub fn load_invite(&mut self, room: &str, text: &str) -> Result<(), String> {
+        let invite = crate::invite::Invite::parse(text, room)?;
+        let packet = invite.snapshot();
+        self.invitation = Some(invite);
+        self.on_packet(&packet, 0);
+        Ok(())
     }
 
     // ---- outbox -----------------------------------------------------------
@@ -541,7 +568,7 @@ impl App {
                         Body::Sub(_, s) => s.stamp,
                         Body::Seat(_, s) => s.stamp,
                         Body::Move(_, m) => m.stamp,
-                        Body::Start(s) | Body::Next(_, s) => *s,
+                        Body::Start(s) | Body::Next(_, s) | Body::Focus(_, s) => *s,
                         Body::Card(_, _, c) => c.stamp,
                         Body::Check(_, c) => c.stamp,
                         Body::None => op.round.stamp,
@@ -698,6 +725,7 @@ impl App {
     }
 
     fn new_round_local(&mut self) {
+        self.guessing_with_group = false;
         self.editing = None;
         self.press = None;
         self.dirty_cards.clear();
@@ -763,6 +791,7 @@ impl App {
         let stamp = self.stamp();
         self.commit(Body::Seat(id, Seat { name, active: true, stamp }));
         self.seat = Some(id);
+        self.guessing_with_group = false;
         self.hello();
     }
 
@@ -824,8 +853,22 @@ impl App {
         self.seat.and_then(|s| self.shared.latest(s).cloned()).unwrap_or_else(|| Sub { decoys: 1, ..Sub::default() })
     }
 
+    pub fn can_write(&self) -> bool {
+        self.shared.round.custom == 0 && self.seat.is_some_and(|s| self.shared.round_players().contains(&s)
+            && (self.shared.start.is_none() || !self.shared.is_ready(s)))
+    }
+
+    /// The shared table can guess while this device writes its own clover.
+    pub fn view_phase(&self) -> Phase {
+        if self.shared.start.is_some() && self.can_write() && !self.guessing_with_group {
+            Phase::Writing
+        } else {
+            self.shared.phase()
+        }
+    }
+
     fn seated_writing(&self) -> Option<u32> {
-        self.seat.filter(|s| self.shared.phase() == Phase::Writing && self.shared.round_players().contains(s))
+        self.seat.filter(|_| self.view_phase() == Phase::Writing && self.can_write())
     }
 
     // ---- what is on the board -------------------------------------------------
@@ -841,7 +884,7 @@ impl App {
             movable: Vec::new(),
             locked: 0,
         };
-        match s.phase() {
+        match self.view_phase() {
             Phase::Lobby | Phase::End => empty(),
             Phase::Writing => {
                 let Some(me) = self.seated_writing() else { return empty() };
@@ -905,14 +948,14 @@ impl App {
     fn layout_at(&self, zoom: f32) -> Layout {
         let (w, h) = (self.w, self.h);
         let ext = 2.0 * FIT_EXTENT;
-        if !matches!(self.shared.phase(), Phase::Guessing(_)) {
+        if !matches!(self.view_phase(), Phase::Guessing(_)) {
             let k = ((w - 2.0 * PAD).min(h - 2.0 * PAD) / ext).max(0.05);
             return Layout { k, bc: (w / 2.0, h / 2.0), tray: None, z: zoom };
         }
         // The tray holds every card of the clover without overlap, three to a
         // row (portrait) or column (landscape) at this device's card size; the
         // board shrinks only as far as that needs.
-        let n = match self.shared.phase() {
+        let n = match self.view_phase() {
             Phase::Guessing(i) => self.shared.ncards(self.shared.puzzles()[i]),
             _ => NSLOTS,
         };
@@ -976,9 +1019,9 @@ impl App {
 
     /// Guess clover `k` next (anyone, any order; solved ones show their answer).
     pub fn jump(&mut self, k: usize) {
-        if matches!(self.shared.phase(), Phase::Guessing(_)) && k < self.shared.puzzles().len() {
+        if matches!(self.view_phase(), Phase::Guessing(_)) && k < self.shared.puzzles().len() {
             let s = self.stamp();
-            self.commit(Body::Next(k as u16, s));
+            self.commit(Body::Focus(self.shared.puzzles()[k], s));
         }
     }
 
@@ -1200,6 +1243,7 @@ impl App {
     /// Cards other players are dragging right now (card → their seat), from
     /// their live pointers: a hold ends when they let go, go quiet or leave.
     pub fn holds(&self) -> BTreeMap<usize, u32> {
+        if !matches!(self.view_phase(), Phase::Guessing(_)) { return BTreeMap::new(); }
         self.cursors.values().filter(|c| c.seat != 0).filter_map(|c| c.card.map(|i| (i as usize, c.seat))).collect()
     }
 
@@ -1275,6 +1319,7 @@ impl App {
     /// Another player's hand on card `i` (from their live pointer): its
     /// device and seat. With `below`, only a hand on a device numbered lower.
     fn hand_on(&self, i: usize, below: Option<u32>) -> Option<(u32, u32)> {
+        if !matches!(self.view_phase(), Phase::Guessing(_)) { return None; }
         self.cursors
             .iter()
             .filter(|(d, c)| c.card == Some(i as u8) && c.seat != 0 && Some(c.seat) != self.seat && below.is_none_or(|b| **d < b))
@@ -1318,7 +1363,7 @@ impl App {
     }
 
     pub fn pointer_move(&mut self, sx: f32, sy: f32) {
-        if matches!(self.shared.phase(), Phase::Guessing(_)) && self.seat.is_some() {
+        if matches!(self.view_phase(), Phase::Guessing(_)) && self.seat.is_some() {
             let (bx, by) = self.board_m().inv().apply(sx, sy);
             let on_board = bx.abs() <= EXTENT && by.abs() <= EXTENT;
             self.my_cursor = if on_board {
@@ -1553,8 +1598,16 @@ impl App {
 
     /// What a button does: see the `ACT_` codes.
     pub fn action(&mut self, code: u32) {
-        let phase = self.shared.phase();
+        let phase = self.view_phase();
         match code {
+            ACT_WRITE | ACT_JOIN_GUESSING if self.shared.start.is_some() && self.can_write() => {
+                self.pointer_cancel();
+                self.editing = None;
+                self.guessing_with_group = code == ACT_JOIN_GUESSING;
+                self.my_cursor = (0, 0.0, 0.0);
+                self.cursor_dirty = true;
+                self.poses.clear();
+            }
             ACT_DEAL if matches!(phase, Phase::Lobby | Phase::End) => self.new_round(),
             ACT_REDEAL => self.new_round(),
             ACT_READY if self.can_ready() => {
@@ -1567,13 +1620,13 @@ impl App {
                     let w = self.shared.puzzles()[k];
                     if self.shared.check(w).done() {
                         let s = self.stamp();
-                        self.commit(Body::Next(self.shared.next_unsolved(k) as u16, s));
+                        let w = self.shared.puzzles().get(self.shared.next_unsolved(k)).copied().unwrap_or(0);
+                        self.commit(Body::Focus(w, s));
                     }
                 }
             }
-            ACT_PROCEED if phase == Phase::Writing && self.seat.is_some() && self.ready_count() > 0 => {
-                let s = self.stamp();
-                self.commit(Body::Start(s));
+            ACT_PROCEED if self.shared.phase() == Phase::Writing && self.seat.is_some() && self.ready_count() > 0 => {
+                self.start_guessing();
             }
             ACT_NEW_GAME => self.new_game(),
             _ => {}
@@ -1624,8 +1677,7 @@ impl App {
             let sub = Sub { clues: c.clues.clone(), decoys: (c.cards.len() - NSLOTS) as u8, ready: true, stamp };
             self.commit(Body::Sub(w, sub));
         }
-        let s = self.stamp();
-        self.commit(Body::Start(s));
+        self.start_guessing();
     }
 
     /// Where a round dealt here now comes from: this table (or, for the
@@ -1692,7 +1744,7 @@ impl App {
 
     pub fn can_check(&self) -> bool {
         let sc = self.scene();
-        match (self.shared.phase(), sc.writer, self.seat) {
+        match (self.view_phase(), sc.writer, self.seat) {
             (Phase::Guessing(_), Some(w), Some(me)) => {
                 w != me && !self.shared.check(w).done() && sc.claim.iter().all(|o| o.is_some())
             }
@@ -1763,7 +1815,18 @@ impl App {
         }
         self.keep_my_seat();
         self.maybe_start_guessing();
-        let phase = self.shared.phase();
+        // Pin legacy selections and a newly reopened round to a writer
+        // before another late submission can change the displayed index.
+        let focus = match (self.shared.next.0, self.shared.phase()) {
+            (Selection::Index(_), Phase::Guessing(k)) | (Selection::Writer(0), Phase::Guessing(k)) => Some(self.shared.puzzles()[k]),
+            (Selection::Index(_), Phase::End) => Some(0),
+            _ => None,
+        };
+        if let Some(w) = focus {
+            let s = self.stamp();
+            self.commit(Body::Focus(w, s));
+        }
+        let phase = self.view_phase();
         // A clover just got finished: let the leaves glow briefly.
         let done_now = match phase {
             Phase::Guessing(k) => {
@@ -1771,6 +1834,13 @@ impl App {
                 Some((w, self.shared.check(w).done()))
             }
             _ => None,
+        };
+        // The list can grow ahead of this clover. Its changing index must
+        // not rotate the board or restart the cards' animations.
+        let phase_changed = if matches!((phase, self.last_phase), (Phase::Guessing(_), Phase::Guessing(_))) {
+            done_now.map(|(w, _)| w) != self.last_done.map(|(w, _)| w)
+        } else {
+            phase != self.last_phase
         };
         if let (Some((w, true)), Some((pw, false))) = (done_now, self.last_done) {
             if w == pw {
@@ -1797,7 +1867,8 @@ impl App {
         self.shakes.retain(|_, t| now - *t < 600.0);
         self.last_done = done_now;
         self.glow = (self.glow - self.dt / 1.8).max(0.0);
-        if phase != self.last_phase {
+        self.last_phase = phase;
+        if phase_changed {
             // A round that ends is kept in Past games (and again if it's
             // replaced later; the same key updates the same entry).
             if phase == Phase::End {
@@ -1806,7 +1877,6 @@ impl App {
                 }
             }
             // New phase or new clover: spin back upright the short way.
-            self.last_phase = phase;
             self.q = (self.q as f32 / 4.0).round() as i32 * 4;
             self.poses.clear();
         }
@@ -1857,9 +1927,15 @@ impl App {
         }
         let players = self.shared.round_players();
         if !players.is_empty() && players.iter().all(|p| self.shared.is_ready(*p)) {
-            let s = self.stamp();
-            self.commit(Body::Start(s));
+            self.start_guessing();
         }
+    }
+
+    fn start_guessing(&mut self) {
+        let w = self.shared.round.players().iter().copied().find(|w| self.shared.is_ready(*w)).unwrap_or(0);
+        let s = self.stamp();
+        self.commit(Body::Start(s));
+        self.commit(Body::Focus(w, s));
     }
 
     /// Skip animations (tests / harness).
@@ -1950,7 +2026,7 @@ impl App {
     /// The two words leaf `d` must link, for the writer: the words on the
     /// cards either side of it that face it.
     fn keywords(&self, sc: &Scene, d: u8) -> Option<String> {
-        if self.shared.phase() != Phase::Writing || sc.writer.is_none() || sc.cards.len() < NSLOTS {
+        if self.view_phase() != Phase::Writing || sc.writer.is_none() || sc.cards.len() < NSLOTS {
             return None;
         }
         let word = |s: usize| {
@@ -2007,7 +2083,7 @@ impl App {
             sc.clues.iter().map(|c| json_str(c)).collect::<Vec<_>>().join(","),
             // Writers' own cards are locked too; only guessing has solved spots.
             (0..NSLOTS)
-                .filter(|&s| sc.locked & (1 << s) != 0 && matches!(self.shared.phase(), Phase::Guessing(_)))
+                .filter(|&s| sc.locked & (1 << s) != 0 && matches!(self.view_phase(), Phase::Guessing(_)))
                 .map(|s| s.to_string())
                 .collect::<Vec<_>>()
                 .join(","),
@@ -2024,7 +2100,7 @@ impl App {
     }
 
     fn rejected_in(&self, sc: &Scene, i: usize) -> Option<usize> {
-        let w = sc.writer.filter(|_| matches!(self.shared.phase(), Phase::Guessing(_)))?;
+        let w = sc.writer.filter(|_| matches!(self.view_phase(), Phase::Guessing(_)))?;
         let check = self.shared.check(w);
         let s = (0..NSLOTS).find(|&s| sc.claim[s] == Some(i) && sc.locked & (1 << s) == 0).filter(|_| !check.done())?;
         check.rejected(i, s, sc.cards[i].rot).then_some(s)
@@ -2035,7 +2111,7 @@ impl App {
         self.strs.clear();
         self.cmds.extend_from_slice(&[C_CLEAR, f32::from_bits(self.pal.bg)]);
         let sc = self.scene();
-        let phase = self.shared.phase();
+        let phase = self.view_phase();
         let l = self.layout();
         self.animate(&sc);
 
@@ -2180,7 +2256,7 @@ impl App {
 
     pub fn ui_json(&self) -> String {
         let s = &self.shared;
-        let phase = s.phase();
+        let phase = self.view_phase();
         let sc = self.scene();
         let present = self.present();
         let writer = sc.writer.filter(|_| matches!(phase, Phase::Guessing(_)));
@@ -2192,6 +2268,7 @@ impl App {
                     Phase::Writing if !s.round.players().contains(&p) => "next",
                     Phase::Writing if s.is_ready(p) => "ready",
                     Phase::Writing => "writing",
+                    _ if s.round.custom == 0 && s.round.players().contains(&p) && !s.is_ready(p) => "writing",
                     Phase::Guessing(_) if writer == Some(p) => "writer",
                     _ => "",
                 };

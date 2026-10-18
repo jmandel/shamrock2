@@ -153,6 +153,9 @@ try {
 
   // ---- writing ----------------------------------------------------------------------
   console.log('\n# writing (everyone at once)');
+  // Seats can arrive in a sync before this page has a direct connection
+  // to every player. Start deals to present players, so wait for presence.
+  await Promise.all(players.map((p) => p.page.waitForFunction(() => window.__cl.ui().dealable.length === 5, null, { timeout: 30000 })));
   const startLabel = await A.page.textContent('#go'), lobbyLine = await A.page.textContent('#hint');
   gate('the lobby says how many players will be dealt in', startLabel === 'Start' && lobbyLine.includes('5 players here'), `${lobbyLine} | ${startLabel}`);
   await A.go(); // Start
