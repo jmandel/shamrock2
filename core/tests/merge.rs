@@ -48,7 +48,7 @@ fn changes(r: &mut Rng) -> Vec<Op> {
         let round = rounds[r.below(rounds.len() as u64) as usize];
         let s = stamp(r);
         let w = 10 + r.below(3) as u32;
-        let body = match r.below(9) {
+        let body = match r.below(10) {
             0 => Body::None,
             1 => Body::Seat(10 + r.below(5) as u32, Seat { name: format!("p{}", r.below(9)), active: r.coin(), stamp: s }),
             2 => Body::Move(Stamp { clock: r.below(3), peer: 1 }, Moved { room: format!("room-{}", r.below(9)), by: w, stamp: s }),
@@ -70,6 +70,7 @@ fn changes(r: &mut Rng) -> Vec<Op> {
                 Body::Check(w, Check { attempts: 1 + r.below(3) as u8, mask: r.below(16) as u8, stamp: s, tried })
             }
             7 => Body::Next(r.below(3) as u16, s),
+            8 => Body::Focus(if r.coin() { w } else { 0 }, s),
             _ => Body::Seat(w, Seat { name: format!("p{w}"), active: true, stamp: s }),
         };
         ops.push(Op { round, body });

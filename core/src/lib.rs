@@ -4,6 +4,7 @@
 
 pub mod app;
 pub mod json;
+pub mod invite;
 pub mod model;
 pub mod pages;
 pub mod words;
@@ -118,15 +119,31 @@ pub extern "C" fn set_solo() {
     g().app.solo = true;
 }
 
-/// A table saved on this device is in the inbox: restore it if it's from
-/// this protocol version and recent enough (see `App::restore`). Returns 1
-/// if it was used.
+/// Restore a saved table from this protocol version. Saves do not expire.
+/// Returns 1 if it was used.
 #[no_mangle]
-pub extern "C" fn restore(len: u32, version: u32, age_ms: f64) -> u32 {
+pub extern "C" fn restore(len: u32, version: u32) -> u32 {
     let bytes = core::mem::take(&mut g().inbox);
-    let ok = g().app.restore(&bytes[..(len as usize).min(bytes.len())], version, age_ms);
+    let ok = g().app.restore(&bytes[..(len as usize).min(bytes.len())], version);
     g().inbox = bytes;
     ok as u32
+}
+
+#[no_mangle]
+pub extern "C" fn create_invite(len: u32) -> u32 {
+    let input = inbox_str(len);
+    let result = g().app.create_invite(&input);
+    to_scratch(result)
+}
+
+/// Room and decoded invite JSON, separated by U+001F. An empty result
+/// means success; otherwise the core returns the explanation for the page.
+#[no_mangle]
+pub extern "C" fn load_invite(len: u32) -> u32 {
+    let input = inbox_str(len);
+    let (room, text) = input.split_once('\u{1f}').unwrap_or(("", ""));
+    let result = g().app.load_invite(room, text).err().unwrap_or_default();
+    to_scratch(result)
 }
 
 #[no_mangle]

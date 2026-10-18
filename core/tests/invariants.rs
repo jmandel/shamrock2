@@ -1,6 +1,6 @@
 //! Native harness: properties the game must satisfy, independent of browsers.
 
-use cloverleaf::app::{App, BOLD_OFF, BOLD_ON, EV_STATUS, SHEET_CLOVERS, SHEET_JOIN, SHEET_PLAYERS, SHEET_RECAP, EV_EDIT_CLUE, EV_KEEP, EV_MOVED, EV_NET, EV_NOTICE, EV_OUTDATED, SAVE_TTL_MS, ZOOM_MAX, ZOOM_MIN};
+use cloverleaf::app::{App, BOLD_OFF, BOLD_ON, EV_STATUS, SHEET_CLOVERS, SHEET_JOIN, SHEET_PLAYERS, SHEET_RECAP, EV_EDIT_CLUE, EV_KEEP, EV_MOVED, EV_NET, EV_NOTICE, EV_OUTDATED, ZOOM_MAX, ZOOM_MIN};
 use cloverleaf::model::*;
 
 const TAU: f32 = std::f32::consts::TAU;
@@ -172,6 +172,7 @@ fn wire_roundtrip() {
         op(Body::Card(9, 4, Card { loc: Loc::Float { x: -3.0, y: 4.0 }, rot: 0, stamp: s })),
         op(Body::Check(9, Check { attempts: 1, mask: 0b0101, stamp: s, tried: 1 << 77 | 5 })),
         op(Body::Next(3, s)),
+        op(Body::Focus(9, s)),
         op(Body::Move(st(1, 5), Moved { room: "quiet-heron-dell".into(), by: 9, stamp: s })),
         Msg::Hello { device: 5, seat: 9, sum: 0xdead_beef, ver: PROTOCOL },
         Msg::Cursor { device: 5, seat: 9, kind: 2, x: 10.0, y: -10.0, card: Some(3) },
@@ -1649,16 +1650,15 @@ fn a_notice_says_what_happened_in_a_sentence() {
 }
 
 #[test]
-fn a_saved_table_is_restored_only_if_recent_and_from_this_version() {
+fn a_saved_table_is_restored_from_this_version_without_an_age_limit() {
     let mut t = Table::new(2);
     t.apps[0].action(1);
     t.pump();
     let saved = t.apps[0].snapshot();
     let fresh = || app(77);
-    assert!(!fresh().restore(&saved, PROTOCOL as u32 + 1, 1000.0), "another version's save");
-    assert!(!fresh().restore(&saved, PROTOCOL as u32, SAVE_TTL_MS + 1.0), "too old");
+    assert!(!fresh().restore(&saved, PROTOCOL as u32 + 1), "another version's save");
     let mut b = fresh();
-    assert!(b.restore(&saved, PROTOCOL as u32, 60_000.0));
+    assert!(b.restore(&saved, PROTOCOL as u32));
     assert_eq!(b.shared.digest(), t.apps[0].shared.digest());
 }
 

@@ -105,6 +105,15 @@
   .stepper button:disabled { opacity: .3; }
   .stepper span { padding: 0 2px; white-space: nowrap; }
   @media (max-width: 480px) { .go { padding: 10px 16px; } #hint { font-size: 15px; } }
+  /* Two choices need room for the status to remain readable on a phone. */
+  @media (max-width: 480px) {
+    #dock:has(#alt:not([hidden])):has(#go:not([hidden]):not(.near)) { flex-wrap: wrap; }
+    #dock:has(#alt:not([hidden])):has(#go:not([hidden]):not(.near)) #hint { order: -1; flex-basis: 100%; line-height: 28px; }
+    #dock:has(#alt:not([hidden])):has(#go:not([hidden]):not(.near)) #dockBtns { margin-left: auto; }
+  }
+  @media (max-width: 360px) {
+    #dock:has(#alt:not([hidden])) #go, #dock:has(#alt:not([hidden])) #alt { font-size: 14px; padding: 9px 10px; }
+  }
   .prefs { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .prefs .grow { flex: 1; }
 
@@ -121,7 +130,23 @@
   @media (min-width: 600px) { .overlay { align-items: center; } .sheet { border-radius: 22px; } }
   .sheet h2 { margin: 0; font: 600 24px var(--serif); }
   .sheet p { margin: 0; color: var(--dim); font-size: 16px; }
-  .sheet input { font: 600 20px var(--sans); color: var(--fg); background: var(--field); border: 2px solid var(--line); border-radius: 14px; padding: 12px 14px; width: 100%; }
+  .sheet input:not([type=checkbox]), .sheet textarea { font: 600 20px var(--sans); color: var(--fg); background: var(--field); border: 2px solid var(--line); border-radius: 14px; padding: 12px 14px; width: 100%; }
+  .sheet textarea { resize: vertical; min-height: 120px; }
+  .checkField { display: flex; align-items: center; gap: 10px; min-height: 44px; cursor: pointer; }
+  .checkField input { width: 22px; height: 22px; flex: none; accent-color: var(--go); }
+  .inviteSeat { display: flex; flex-direction: column; gap: 4px; min-height: 76px; padding: 15px 18px; text-align: left; border-radius: 14px; background: var(--menu-item); }
+  .inviteSeat strong { font-size: 22px; overflow-wrap: anywhere; }
+  .inviteSeat small { font-size: 15px; color: var(--dim); }
+  #seatConfirm { display: flex; flex-direction: column; gap: 14px; }
+  #inviteJoinHead { display: flex; flex-direction: column; gap: 8px; }
+  #joinSheet.invited .brand { flex-direction: row; justify-content: center; gap: 8px; padding: 0; }
+  #joinSheet.invited .brand svg { width: 32px; height: 32px; }
+  #joinSheet.invited .brand h1 { font-size: 28px; }
+  #joinSheet.invited .brand p { display: none; }
+  #joinSheet.invited #seatList { min-height: 0; flex-shrink: 1; overflow-y: auto; }
+  #joinSheet.invited .inviteSeat { flex-shrink: 0; }
+  #inviteSetup { display: flex; flex-direction: column; gap: 10px; }
+  #homeError { color: var(--danger); }
   .brand { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 4px 0 6px; text-align: center; }
   .brand svg { width: 72px; height: 72px; }
   /* The mark settles in once: a quarter turn, easing to rest. */
@@ -247,13 +272,27 @@
       <h1>shamrock</h1>
       <p>Clue your clover. Guess your friends'.</p>
     </div>
-    <label class="field"><span>Table</span><input id="tableInput" maxlength="32" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="next"></label>
-    <label class="field"><span>Your name</span><input id="nameInput" maxlength="24" placeholder="Your name" autocomplete="nickname" enterkeyhint="go"></label>
-    <p>Choosing a name that's already playing takes over that seat, handy for switching devices.</p>
+    <div id="inviteJoinHead" hidden><h2 id="inviteJoinTitle"></h2><p id="inviteJoinIntro"></p></div>
+    <label class="field" id="joinTableField"><span>Table</span><input id="tableInput" maxlength="32" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="next"></label>
+    <label class="field" id="joinNameField"><span>Your name</span><input id="nameInput" maxlength="24" placeholder="Your name" autocomplete="nickname" enterkeyhint="go"></label>
+    <p id="joinAdvice">Choosing a name that's already playing takes over that seat, handy for switching devices.</p>
     <div class="list" id="seatList"></div>
-    <div class="row"><button type="submit" class="go grow" id="joinBtn">Join</button></div>
+    <div id="seatConfirm" hidden>
+      <p id="seatConfirmText"></p>
+      <button type="button" class="go" id="seatConfirmJoin"></button>
+      <button type="button" id="seatChooseAnother">Choose a different name</button>
+    </div>
+    <div class="row" id="joinSubmit"><button type="submit" class="go grow" id="joinBtn">Join</button></div>
     <button type="button" class="link" id="watchBtn">Just watch</button>
   </form>
+</div>
+
+<div class="overlay" id="inviteErrorSheet">
+  <div class="sheet">
+    <h2>This invite couldn't be opened</h2>
+    <p id="inviteErrorText"></p>
+    <button id="inviteErrorHome">All my tables</button>
+  </div>
 </div>
 
 <div class="overlay" id="menuSheet">
@@ -332,7 +371,14 @@
       <h2>Start a table</h2>
       <label class="field"><span>Table</span><span class="withBtn"><input id="homeRoom" maxlength="32" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="next"><button type="button" id="homeReroll" aria-label="Suggest another name" title="Suggest another name">↻</button></span></label>
       <label class="field"><span>Your name</span><input id="homeName" maxlength="24" placeholder="Your name" autocomplete="nickname" enterkeyhint="go"></label>
+      <label class="checkField"><input type="checkbox" id="homePlan"><span>Let everyone start before we meet</span></label>
+      <div id="inviteSetup" hidden>
+        <label class="field"><span>Friends' names · one per line</span><textarea id="homeFriends" rows="3" maxlength="600" placeholder="Ana&#10;Ben&#10;Cy" autocomplete="off" spellcheck="false"></textarea></label>
+        <p>You and up to 11 friends. Share one link; everyone chooses their name and writes their own clues. Meet online later to sync and guess.</p>
+      </div>
+      <p id="homeError" role="alert" hidden></p>
       <button type="submit" class="go" id="homeNew">Start</button>
+      <button type="submit" class="go" id="homeInvite" hidden>Create group invite</button>
     </form>
     <h2 id="tablesHead">Your tables</h2>
     <div class="list" id="tableList"></div>

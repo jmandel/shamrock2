@@ -117,6 +117,7 @@ footer { margin-top: 40px; font-size: 13.5px; color: var(--dim) }
       <li><a href="#cases">The cases it must handle</a></li>
       <li><a href="#principles">Seven principles</a></li>
       <li><a href="#state">What lives where</a></li>
+      <li><a href="#invites">Starting apart from one invite</a></li>
       <li><a href="#rank">Which round is current</a></li>
       <li><a href="#merge">How each part merges</a></li>
       <li><a href="#crdt">Is this a CRDT?</a></li>
@@ -180,7 +181,7 @@ footer { margin-top: 40px; font-size: 13.5px; color: var(--dim) }
       <h3>This device</h3>
       <div class="where">Never shared</div>
       <ul>
-        <li>A save of the table, restored if under 6 h old <span class="chip exists">exists</span></li>
+        <li>A save of the table, restored without an age limit <span class="chip exists">exists</span></li>
         <li>Past games, the last 60 rounds <span class="chip exists">exists</span>, now fed by one rule <span class="chip new">new</span></li>
         <li>Your name, card size, theme <span class="chip exists">exists</span></li>
       </ul>
@@ -202,6 +203,12 @@ moves   table id → { room, stamp }                last writer wins; where a gr
     <li><b>The header</b> says which round this is and where it came from. <code>table</code> answers "is this my table?", <code>parent</code> answers "is this the next round, or a fork?", and <code>dealer</code> says who did it. The deck shuffle is derived from the table and the epoch, so the separate <code>deck_seed</code> field goes <span class="chip new">new</span>.</li>
     <li><b>The body</b> merges register by register, as today. Clue versions are all kept, so "what counted when guessing started" is well defined even when an edit races Proceed. A change that belongs to a round other than the current one is ignored by the table. It isn't lost: see <a href="#history">History is personal</a>.</li>
   </ul>
+
+  <h2 id="invites">Starting apart from one invite</h2>
+  <p>A group invite supplies a common starting point before any devices connect. Its versioned <code>?i=</code> payload names a fresh room, one round identity and seed, and an ordered roster of 2–12 players. The core reconstructs the same round and seats on every device. Names are unique under the existing seat identity rule; reserving them does not make those players appear online.</p>
+  <p>The first visit asks <b>Who are you?</b>, with a full-name button for each player. It does not auto-select a name remembered from a different table. Choosing a currently occupied name requires another confirmation to switch devices. Each person can write and submit while alone; guessing waits for the reserved roster, with the existing explicit <b>Start anyway</b> override.</p>
+  <p>A subset can start guessing while reserved writers finish later. Those writers see their own clover and can switch between <b>Guess with group</b> and <b>Write my clover</b>. Submitting adds their clover to the same round. Selection names a writer, not an index into the growing clover list, so existing cards, checks, and the current board stay put. After the available clovers finish, a late submission reopens guessing; explicitly dealing the next round ends this opportunity.</p>
+  <p>The invite is merged before the local save and before connecting. It carries ordinary round and seat operations, so replaying it cannot undo later clues, a later round or an explicit New game. The browser keeps the invite with its saved table links. Compatible saves never expire, for invited and ordinary tables alike. The invite carries the initial deal only: later work is kept locally until peers connect and exchange it. No relay stores the game. Later rounds use the usual roster of players present when dealt.</p>
 
   <h2 id="rank">Which round is current</h2>
   <p>When two rounds meet, one fixed order decides, identically on every device:</p>
@@ -225,7 +232,7 @@ moves   table id → { room, stamp }                last writer wins; where a gr
       <tr><td>Start of guessing</td><td>Newest stamp.</td></tr>
       <tr><td>Cards, per clover and card</td><td>Newest stamp.</td></tr>
       <tr><td>Checks, per clover</td><td>Most attempts, then newest stamp. The placements a check rejected are combined from both versions, so two checks made at once both count. The test also requires that no rejection is ever lost.</td></tr>
-      <tr><td>Which clover is up</td><td>Newest stamp.</td></tr>
+      <tr><td>Which clover is up</td><td>Newest stamp, selecting a writer identity (0 means the available clovers are finished). Protocol 4 adds Focus; legacy Next records from protocol 3 are still readable and are pinned to a writer on resume.</td></tr>
     </tbody>
   </table></div>
   <p>Some things don't merge, by design: who is here (from live connections), and anything one device keeps for itself (Past games, What happened, saves). A change for a round the table has moved past isn't merged either. It goes to Past games on the devices that were in that round (<a href="#history">History is personal</a>). Getting every change to every device is the protocol's job, not the merge's: see <a href="#heal">How the table heals itself</a>.</p>
@@ -236,7 +243,7 @@ moves   table id → { room, stamp }                last writer wins; where a gr
     <thead><tr><th>Part</th><th>Standard CRDT it is</th></tr></thead>
     <tbody>
       <tr><td>Seats, moves, cards, start, which clover is up</td><td>Last-writer-wins registers, keyed in maps (an LWW map). Stamps are Lamport clocks with the device id to break ties, so "latest" respects cause and effect: a change made after seeing another always wins over it.</td></tr>
-      <tr><td>Clue versions</td><td>A grow-only set of versions, read as "latest". All are kept because "what counted when guessing started" means "the latest version stamped before Start", and that is the same everywhere.</td></tr>
+      <tr><td>Clue versions</td><td>A grow-only set of versions. Before Start, read the latest. At Start, freeze the latest pre-Start version if it was ready. Otherwise freeze the first ready version stamped after Start; until then, show the latest draft. The same merged versions always produce the same clover, regardless of arrival order.</td></tr>
       <tr><td>A check</td><td>A pair: the result keeps the most attempts, then the latest stamp (an LWW register), and the rejected placements are a grow-only set (merged by union).</td></tr>
       <tr><td>The current round with everything in it</td><td>A lexicographic pair: the higher-ranked round wins outright, and only equal rounds merge their contents. Because rank is a total order, this is itself a lattice, and it's how a new round or New game resets the table <em>without tombstones</em>: the old round's contents are simply outranked.</td></tr>
     </tbody>
@@ -278,7 +285,7 @@ moves   table id → { room, stamp }                last writer wins; where a gr
     </div>
     <div class="case">
       <h3>Arriving</h3>
-      <div class="says">You had no table yet: a first visit, or an empty or expired save. No notice; you just see the table.</div>
+      <div class="says">You had no table yet: a first visit, or no compatible save. No notice; you just see the table.</div>
     </div>
   </div>
   <p>Whenever the round you're leaving had anything in it, the notice ends with <span class="notice">"Your round is in Past games."</span></p>
@@ -302,7 +309,7 @@ moves   table id → { room, stamp }                last writer wins; where a gr
   <p>When two tables meet in one room, playing together is the default, and it needs nothing from anyone. But the two groups may be strangers, or may simply want their own games back. The notice on the outranked side offers <b>Move us to a new table</b>.</p>
   <ol>
     <li><b>One tap, by anyone in the group.</b> Their device picks a fresh room name and opens it, seeded with its copy of the group's table: the round they were in and their seats. They arrive already seated, mid-round, exactly where they were.</li>
-    <li><b>The table remembers the move.</b> A small shared record goes into the old room: the moved group's table id → the new room name. It's last-writer-wins and a few bytes long. Because it's in the room's table, every device of that group sees it, whenever it next connects: now, after a reload, or later from its save (saves are restored for 6 hours).</li>
+    <li><b>The table remembers the move.</b> A small shared record goes into the old room: the moved group's table id → the new room name. It's last-writer-wins and a few bytes long. Because it's in the room's table, every device of that group sees it, whenever it next connects: now, after a reload, or later from its save (saves do not expire).</li>
     <li><b>The rest of the group gets one tap to follow.</b> Their notice reads <span class="notice">"Ana moved your group to #quiet-heron-dell. Go there?"</span> Following opens the new room seeded with <em>their own</em> copy too. Copies of the same round from the same table merge, so everyone's drafts arrive.</li>
     <li><b>Nobody is moved without choosing.</b> The other group isn't affected at all and keeps the room. A group member who ignores the prompt simply stays at the merged table.</li>
   </ol>
@@ -324,7 +331,7 @@ moves   table id → { room, stamp }                last writer wins; where a gr
     <tbody>
       <tr><td>A full sync (seats plus the current round) every time a connection opens</td><td>Anyone joining or reconnecting</td></tr>
       <tr><td>A table fingerprint in every Hello. If a peer's differs twice in a row with neither side changing, both resync, at most every 5 s</td><td>Devices that drifted apart while staying connected, such as a change that missed one player and whose sender then left</td></tr>
-      <tr><td>Each device saves the table every 2 s and on leaving, and restores it on load if under 6 h old</td><td>Every holder reloading or closing; one person coming back alone</td></tr>
+      <tr><td>Each device saves the table every 2 s and on leaving, and restores compatible saves without an age limit</td><td>Every holder reloading or closing; one person coming back alone, even months later</td></tr>
       <tr><td>A saved name rejoins 1.5 s after the page loads</td><td>Reloads</td></tr>
     </tbody>
   </table></div>
@@ -413,6 +420,7 @@ moves   table id → { room, stamp }                last writer wins; where a gr
     </div>
     <div>
       <h3>Browser fault scenarios</h3>
+      <p><code>harness/invites.mjs</code> exercises one four-player invite through separate browser profiles: everyone writes alone, month-old saves reopen, and all clovers converge over real WebRTC. It also checks the twelve-player phone picker, occupied-seat confirmation, copied and saved links, malformed invites, ordinary saves a year old, explicit resets and failed-save retries. Native tests cover every group size from 2 to 12; a 40-run network story requires independent submissions, reloads, partitions and all clovers reaching completion.</p>
       <p><code>harness/faults.mjs</code>: real browsers, one profile per player, faults injected into the page and the relay:</p>
       <ul>
         <li>a join storm;</li>

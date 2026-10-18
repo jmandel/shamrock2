@@ -41,7 +41,9 @@ pub const CLAIM_R: f32 = 100.0;
 pub const MAX_TEXT: usize = 60;
 /// The message format's version. Bump it whenever the wire format changes:
 /// pages hearing a newer one ask their player to reload.
-pub const PROTOCOL: u16 = 3;
+pub const PROTOCOL: u16 = 4;
+/// Version 3 snapshots and invite deals still use readable records.
+pub const MIN_PROTOCOL: u16 = 3;
 pub const MAX_PLAYERS: usize = 12;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default, Hash)]
@@ -180,13 +182,27 @@ pub enum Body {
     /// The group whose table id this is moved to another room.
     Move(Stamp, Moved),
     Sub(u32, Sub),
-    /// Writing is over; guessing begins.
+    /// Guessing begins; unfinished writers may still submit their clovers.
     Start(Stamp),
     Card(u32, u8, Card),
     Check(u32, Check),
     /// Index of the clover being guessed (last writer wins, so anyone can
     /// jump to any clover; past the last one means the round is over).
     Next(u16, Stamp),
+    /// Clover identified by its writer, or 0 once all available clovers
+    /// are done. Late submissions cannot change what this points at.
+    Focus(u32, Stamp),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Selection {
+    /// Kept for reading version 3 saves.
+    Index(u16),
+    Writer(u32),
+}
+
+impl Default for Selection {
+    fn default() -> Self { Self::Index(0) }
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -211,13 +227,13 @@ pub struct Shared {
     pub moves: BTreeMap<Stamp, Moved>,
     pub round: Round,
     /// Every version of every writer's clues, keyed (writer, stamp). Keeping
-    /// versions makes "what was submitted when guessing started" well
-    /// defined even when edits and Proceed race.
+    /// versions defines the submission frozen at Start, or the first ready
+    /// version after Start for a late writer, even when messages race.
     pub subs: BTreeMap<(u32, Stamp), Sub>,
     pub start: Option<Stamp>,
     pub cards: BTreeMap<(u32, u8), Card>,
     pub checks: BTreeMap<u32, Check>,
-    pub next: (u16, Stamp),
+    pub next: (Selection, Stamp),
 }
 
 /// A clover brought in from elsewhere (e.g. read off a screenshot of an
@@ -469,10 +485,15 @@ impl Shared {
                 self.checks.insert(*w, next);
                 n
             }
-            Body::Next(k, s) => {
-                let n = (*s, *k) > (self.next.1, self.next.0);
+            Body::Next(_, s) | Body::Focus(_, s) => {
+                let selection = match op.body {
+                    Body::Next(k, _) => Selection::Index(k),
+                    Body::Focus(w, _) => Selection::Writer(w),
+                    _ => unreachable!(),
+                };
+                let n = (*s, selection) > (self.next.1, self.next.0);
                 if n {
-                    self.next = (*k, *s);
+                    self.next = (selection, *s);
                 }
                 n
             }
@@ -493,7 +514,10 @@ impl Shared {
         v.extend(self.cards.iter().map(|((w, i), c)| op(Body::Card(*w, *i, *c))));
         v.extend(self.checks.iter().map(|(w, c)| op(Body::Check(*w, *c))));
         if self.next.1 != Stamp::default() {
-            v.push(op(Body::Next(self.next.0, self.next.1)));
+            v.push(op(match self.next.0 {
+                Selection::Index(k) => Body::Next(k, self.next.1),
+                Selection::Writer(w) => Body::Focus(w, self.next.1),
+            }));
         }
         v
     }
@@ -547,10 +571,16 @@ impl Shared {
         self.subs.range((w, Stamp::default())..=(w, Stamp { clock: u64::MAX, peer: u32::MAX })).next_back().map(|(_, s)| s)
     }
 
-    /// A writer's clues as they stood when guessing started (latest otherwise).
+    /// Freeze ready clues at Start. An unfinished writer can join later:
+    /// their first ready version after Start freezes their clover instead.
     pub fn effective(&self, w: u32) -> Option<&Sub> {
         match self.start {
-            Some(start) => self.subs.range((w, Stamp::default())..(w, start)).next_back().map(|(_, s)| s),
+            Some(start) => {
+                let before = self.subs.range((w, Stamp::default())..(w, start)).next_back().map(|(_, s)| s);
+                if before.is_some_and(|s| s.ready) { return before; }
+                self.subs.range((w, start)..=(w, Stamp { clock: u64::MAX, peer: u32::MAX }))
+                    .find(|(_, s)| s.ready).map(|(_, s)| s).or_else(|| self.latest(w))
+            }
             None => self.latest(w),
         }
     }
@@ -565,7 +595,7 @@ impl Shared {
     }
 
     /// Writers whose clovers get guessed, in deal order: those who had
-    /// submitted when guessing started.
+    /// submitted when guessing started or have submitted since.
     pub fn puzzles(&self) -> Vec<u32> {
         if self.start.is_none() {
             return Vec::new();
@@ -579,8 +609,13 @@ impl Shared {
         } else if self.start.is_none() {
             Phase::Writing
         } else {
-            let k = self.next.0 as usize;
-            if k < self.puzzles().len() { Phase::Guessing(k) } else { Phase::End }
+            let puzzles = self.puzzles();
+            let k = match self.next.0 {
+                Selection::Index(k) => ((k as usize) < puzzles.len()).then_some(k as usize),
+                Selection::Writer(0) => puzzles.iter().position(|w| !self.check(*w).done()),
+                Selection::Writer(w) => puzzles.iter().position(|p| *p == w),
+            };
+            k.map_or(Phase::End, Phase::Guessing)
         }
     }
 
@@ -755,6 +790,7 @@ const T_CHECK: u8 = 5;
 const T_NEXT: u8 = 6;
 const T_SEAT: u8 = 7;
 const T_MOVE: u8 = 8;
+const T_FOCUS: u8 = 9;
 const T_HELLO: u8 = 20;
 const T_CURSOR: u8 = 21;
 
@@ -800,6 +836,7 @@ pub fn encode(m: &Msg, b: &mut Vec<u8>) {
                 Body::Card(..) => T_CARD,
                 Body::Check(..) => T_CHECK,
                 Body::Next(..) => T_NEXT,
+                Body::Focus(..) => T_FOCUS,
                 Body::Seat(..) => T_SEAT,
                 Body::Move(..) => T_MOVE,
             });
@@ -862,6 +899,10 @@ pub fn encode(m: &Msg, b: &mut Vec<u8>) {
                 }
                 Body::Next(k, s) => {
                     b.extend_from_slice(&k.to_le_bytes());
+                    put_stamp(b, *s);
+                }
+                Body::Focus(w, s) => {
+                    b.extend_from_slice(&w.to_le_bytes());
                     put_stamp(b, *s);
                 }
             }
@@ -1001,6 +1042,7 @@ impl<'a> Reader<'a> {
                 let k = self.u16()?;
                 Body::Next(k, self.stamp()?)
             }
+            T_FOCUS => Body::Focus(self.u32()?, self.stamp()?),
             _ => return None,
         };
         Some(Msg::Op(Op { round, body }))

@@ -127,7 +127,7 @@ export function agentTools(g) {
     },
     {
       name: 'submit_clover',
-      description: 'Submit your four clues (writing phase). Guessing starts once everyone has submitted.',
+      description: 'Submit your four clues. Everyone submitting starts guessing; a late submission adds your clover to the round already being guessed.',
       inputSchema: { type: 'object', properties: {} },
       run() {
         const u = g.ui();
