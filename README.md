@@ -10,7 +10,7 @@ This is an experiment in the workflow of "delete abstraction layers, write a
 validation harness, let the agent hill-climb it". See [DECISIONS.md](DECISIONS.md)
 for the up-front decisions.
 
-**Play:** https://jmandel-bot.github.io/shamrock2/#pick-a-room-name (share the link; same room = same table)
+**Play:** https://joshuamandel.com/shamrock2/#pick-a-room-name (share the link; same room = same table)
 
 ## Layout
 
@@ -51,6 +51,10 @@ node harness/serve.mjs # prints a URL
 - `?net=local#myroom` uses BroadcastChannel, for same-browser tabs with no WebRTC.
 
 `web/` is fully static, so any static host works. Pages serves it at the site root. Anyone with the same `#room` joins the table.
+
+**Connections on restrictive networks.** Nostr introduces browsers to one another; WebRTC then needs a working route between them. Some Wi-Fi, VPN and mobile networks need a TURN relay for that second step. Configure one in `web/network.json`, either as `{"iceServers": [{"urls": ["turns:your-relay.example:443?transport=tcp"], "username": "browser-user", "credential": "browser-credential"}]}` or as `{"iceServersUrl": "https://your-credential-service.example/ice"}`. The endpoint may return an ICE-server array or an object with an `iceServers` array; it must allow requests from the site's origin. Include TURN over TLS/TCP on port 443 for networks that block UDP. These credentials are sent to browsers, so keep provider API keys on the credential service, never in this static file. Issue credentials with a lifetime long enough for a game; a reload fetches new ones. [Trystero's connection guide](https://github.com/dmotz/trystero#troubleshooting-connection-issues) explains the transport, and [Cloudflare documents a credential endpoint](https://developers.cloudflare.com/realtime/turn/generate-credentials/).
+
+The checked-in configuration has no TURN service enabled. Failed credential requests fall back to direct connections. Discovery and peer retries are handled by Trystero; the page does not repeatedly leave the room during negotiation. If discovery succeeds but a peer cannot connect, the status says **Couldn't connect** and suggests another network, instead of waiting indefinitely for someone who is already there. TURN relays encrypted WebRTC traffic; game state still lives on the players' devices.
 
 **How a game goes** (So Clover! rules, everyone at once):
 
@@ -109,6 +113,7 @@ Boards from elsewhere (e.g. read off a screenshot of an old game) become ordinar
 node harness/run.mjs                # browser gates + metrics → harness/out/scorecard.json
 node harness/faults.mjs             # fault scenarios in real browsers (ONLY=text runs one)
 node harness/invites.mjs            # shared group link, name picker, partial groups, late submissions, old saves (CHROMIUM=/path/to/chromium if needed)
+node harness/connections.mjs        # delayed/blocked ICE, recovery and credential failure; TURN_BIN=/path/to/turnserver also tests real TURN/TCP
 node harness/longnames.mjs          # 24-character names on a 360 px phone: the status strip still fits
 node harness/layout.mjs             # every screen and sheet, stress data, 6 sizes: generic layout faults (ONLY=state)
 node harness/idle.mjs               # what an idle table costs: CPU, frames and paints per second (IDLE_S=20)

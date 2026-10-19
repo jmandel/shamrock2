@@ -9,6 +9,21 @@ fn approx(a: f32, b: f32) -> bool {
     (a - b).abs() < 0.05
 }
 
+#[test]
+fn a_failed_connection_is_not_reported_as_nobody_being_here() {
+    let mut a = App::new(100);
+    a.join("Ana");
+    assert_eq!(a.strip().hint, vec!["Waiting for others"]);
+    a.connection_failed = true;
+    assert!(a.strip().hint[0].contains("Couldn't connect"));
+    assert!(!a.strip().pulse);
+    a.links = 1;
+    assert!(!a.strip().hint[0].contains("Couldn't connect"));
+    a.links = 0;
+    a.solo = true;
+    assert!(!a.strip().hint[0].contains("Couldn't connect"));
+}
+
 fn app(seed: u64) -> App {
     let mut a = App::new(seed);
     (a.w, a.h, a.dpr) = (1000.0, 800.0, 1.0);

@@ -19,7 +19,7 @@ const fails = [], errors = [];
 const check = (ok, what, detail = '') => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${what}${detail ? `  — ${detail}` : ''}`); if (!ok) fails.push(what); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const until = async (fn, ms = 15000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { try { if (await fn()) return true; } catch {} await sleep(150); } return false; };
-const url = (room, extra = '') => `http://localhost:${PORT}/?signal=ws://localhost:${RELAY}&chaos&rejoin=2000${extra}#${room}`;
+const url = (room, extra = '') => `http://localhost:${PORT}/?signal=ws://localhost:${RELAY}&chaos${extra}#${room}`;
 
 /** A player: their own browser context (storage), one page at the table. */
 async function player(name, room, { join = true } = {}) {

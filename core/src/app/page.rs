@@ -233,10 +233,14 @@ impl App {
             st.tip = Some("guess");
         }
         // Not connected to anyone: say so rather than look normal while broken.
-        if !self.solo && self.links == 0 && !(self.invitation.is_some() && phase == Phase::Writing && seated) {
-            st.pulse = true;
+        if !self.solo && self.links == 0 && (self.connection_failed || !(self.invitation.is_some() && phase == Phase::Writing && seated)) {
+            st.pulse = !self.connection_failed;
             let others = s.players().iter().any(|&p| Some(p) != self.seat);
-            st.hint = vec![if others { "Reconnecting to the table…" } else { "Waiting for others" }.into()];
+            st.hint = if self.connection_failed {
+                vec!["Couldn't connect to the table · try another network".into(), "Couldn't connect · try another network".into(), "Couldn't connect".into()]
+            } else {
+                vec![if others { "Reconnecting to the table…" } else { "Waiting for others" }.into()]
+            };
         }
         // While writing from an invite, being alone is expected. Keep the
         // useful writing/waiting status, and keep the chosen identity visible.

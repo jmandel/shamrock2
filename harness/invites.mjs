@@ -7,7 +7,7 @@ import { chromium } from 'playwright';
 import { serve } from './serve.mjs';
 
 const PORT = 8951, RELAY = 8952;
-const base = `http://localhost:${PORT}/?signal=ws://localhost:${RELAY}&rejoin=2000`;
+const base = `http://localhost:${PORT}/?signal=ws://localhost:${RELAY}`;
 const server = await serve({ port: PORT, relayPort: RELAY, quiet: true });
 let browser;
 const errors = [];

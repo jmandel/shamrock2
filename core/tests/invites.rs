@@ -21,6 +21,17 @@ fn submit(a: &mut App, text: &str) {
     a.action(ACT_READY);
 }
 
+#[test]
+fn invited_writers_see_connection_failures_but_can_keep_writing() {
+    let i = invite(2);
+    let mut a = open(&i, 0);
+    assert!(!a.strip().hint[0].contains("Couldn't connect"));
+    a.connection_failed = true;
+    assert!(a.strip().hint[0].contains("Couldn't connect"));
+    submit(&mut a, "clue");
+    assert!(a.shared.is_ready(a.seat.unwrap()));
+}
+
 fn sync(a: &mut App, b: &mut App) {
     for lap in 0..3 {
         let (sa, sb) = (a.snapshot(), b.snapshot());
