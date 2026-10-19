@@ -66,6 +66,7 @@ export function agentTools(g) {
         return {
           phase: u.phase, round: u.round, you: u.name ?? null, seated: u.seated,
           players: u.players.map((p) => ({ name: p.name, status: p.status, away: p.away, you: p.you })),
+          nextRound: g.roundPlan().rows.map(({ name, selected, note }) => ({ name, selected, note })),
           status: g.status(),
           decoys: u.decoys, readyCount: u.readyCount,
           clover: {
@@ -95,14 +96,16 @@ export function agentTools(g) {
     },
     {
       name: 'start_round',
-      description: 'Deal a new round to everyone seated (from the lobby, or after a round ends).',
-      inputSchema: { type: 'object', properties: {} },
-      run() {
+      description: 'Deal a new round (from the lobby, or after a round ends). Defaults to the previous players, including away players, plus new arrivals. Optionally pass the exact player names to deal in; see nextRound in get_table.',
+      inputSchema: { type: 'object', properties: { players: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 12, uniqueItems: true, description: 'Exact player names to include. Unchecked players keep sitting out on later rounds until selected again.' } } },
+      run({ players } = {}) {
         const u = g.ui();
         if (!['lobby', 'end'].includes(u.phase)) return done(`a round is already under way (${u.phase})`, false);
-        if (!u.dealable.length) return done('nobody is seated yet', false);
-        g.act('deal');
-        return done(`dealt to ${u.dealable.join(', ')}`);
+        const plan = g.roundPlan();
+        const names = players ?? plan.rows.filter((p) => p.selected).map((p) => p.name);
+        if (!Array.isArray(names) || names.some((name) => !plan.rows.some((p) => p.name === name))) return done('Use player names from nextRound in get_table.', false);
+        const error = g.dealSelected(plan, names.map((name) => plan.rows.find((p) => p.name === name).id));
+        return done(error || `dealt to ${names.join(', ')}`, !error);
       },
     },
     {

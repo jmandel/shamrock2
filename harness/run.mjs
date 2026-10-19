@@ -80,7 +80,7 @@ async function open(label, viewport = { width: 1280, height: 860 }) {
       await page.fill('#nameInput', name);
       await page.click('#joinBtn');
     },
-    go: () => page.click('#go'),
+    go: async () => { await page.click('#go'); if (await page.locator('#dealSheet.open').count()) await page.click('#dealConfirm'); },
     waitGoEnabled: () => page.waitForFunction(() => !document.getElementById('go').disabled && !document.getElementById('go').hidden),
   };
   return P;
@@ -639,6 +639,10 @@ try {
   // Ben's recap is open over the table; its Next round deals again.
   await B.page.waitForSelector('#recapSheet.open', { timeout: 5000 });
   await B.page.click('#recapNext');
+  await B.page.waitForSelector('#dealSheet.open');
+  const selectedNames = await B.page.locator('#dealList label').evaluateAll((rows) => rows.filter((r) => r.querySelector('input').checked).map((r) => r.querySelector('b').textContent));
+  gate('next round shows the selected players before dealing', selectedNames.length === 5 && (await B.digest()).round === 1, selectedNames.join(', '));
+  await B.page.click('#dealConfirm');
   await until(all, (d) => d.phase === 'writing' && d.round === 2);
   gate('the next round button says what it does', nextLabel === 'Next round', nextLabel);
   const r2 = await C.digest();

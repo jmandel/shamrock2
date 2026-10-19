@@ -11,7 +11,7 @@
 //! wiping the other.
 
 use crate::words::CARDS;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const NSLOTS: usize = 4;
 pub const MAX_DECOYS: u8 = 4;
@@ -41,8 +41,8 @@ pub const CLAIM_R: f32 = 100.0;
 pub const MAX_TEXT: usize = 60;
 /// The message format's version. Bump it whenever the wire format changes:
 /// pages hearing a newer one ask their player to reload.
-pub const PROTOCOL: u16 = 4;
-/// Version 3 snapshots and invite deals still use readable records.
+pub const PROTOCOL: u16 = 5;
+/// Version 3 and 4 snapshots and invite deals still use readable records.
 pub const MIN_PROTOCOL: u16 = 3;
 pub const MAX_PLAYERS: usize = 12;
 
@@ -192,6 +192,9 @@ pub enum Body {
     /// Clover identified by its writer, or 0 once all available clovers
     /// are done. Late submissions cannot change what this points at.
     Focus(u32, Stamp),
+    /// Left unchecked when this round was dealt. Copied into the next deal
+    /// until explicitly selected again; independent of connection presence.
+    SitOut(u32),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -234,6 +237,7 @@ pub struct Shared {
     pub cards: BTreeMap<(u32, u8), Card>,
     pub checks: BTreeMap<u32, Check>,
     pub next: (Selection, Stamp),
+    pub sitting_out: BTreeSet<u32>,
 }
 
 /// A clover brought in from elsewhere (e.g. read off a screenshot of an
@@ -452,12 +456,14 @@ impl Shared {
             self.cards.clear();
             self.checks.clear();
             self.next = Default::default();
+            self.sitting_out.clear();
             changed = true;
         }
         if op.round.stamp != self.round.stamp {
             return changed;
         }
         let newer = match &op.body {
+            Body::SitOut(p) => self.sitting_out.insert(*p),
             Body::Sub(w, s) => {
                 self.subs.insert((*w, s.stamp), s.clone()).is_none()
             }
@@ -513,6 +519,7 @@ impl Shared {
         v.extend(self.start.map(|s| op(Body::Start(s))));
         v.extend(self.cards.iter().map(|((w, i), c)| op(Body::Card(*w, *i, *c))));
         v.extend(self.checks.iter().map(|(w, c)| op(Body::Check(*w, *c))));
+        v.extend(self.sitting_out.iter().map(|p| op(Body::SitOut(*p))));
         if self.next.1 != Stamp::default() {
             v.push(op(match self.next.0 {
                 Selection::Index(k) => Body::Next(k, self.next.1),
@@ -729,11 +736,12 @@ impl Shared {
             })
             .collect();
         format!(
-            "{{\"phase\":\"{phase}\",\"epoch\":{},\"round\":{},\"seed\":{},\"dealt\":{:?},\"seats\":[{}],\"moves\":[{}],\"subs\":[{}],\"puzzles\":[{}]}}",
+            "{{\"phase\":\"{phase}\",\"epoch\":{},\"round\":{},\"seed\":{},\"dealt\":{:?},\"sittingOut\":{:?},\"seats\":[{}],\"moves\":[{}],\"subs\":[{}],\"puzzles\":[{}]}}",
             self.round.epoch,
             self.round.n,
             self.round.seed,
             self.round.players(),
+            self.sitting_out.iter().collect::<Vec<_>>(),
             seats.join(","),
             moves.join(","),
             subs.join(","),
@@ -791,6 +799,7 @@ const T_NEXT: u8 = 6;
 const T_SEAT: u8 = 7;
 const T_MOVE: u8 = 8;
 const T_FOCUS: u8 = 9;
+const T_SIT_OUT: u8 = 10;
 const T_HELLO: u8 = 20;
 const T_CURSOR: u8 = 21;
 
@@ -837,6 +846,7 @@ pub fn encode(m: &Msg, b: &mut Vec<u8>) {
                 Body::Check(..) => T_CHECK,
                 Body::Next(..) => T_NEXT,
                 Body::Focus(..) => T_FOCUS,
+                Body::SitOut(..) => T_SIT_OUT,
                 Body::Seat(..) => T_SEAT,
                 Body::Move(..) => T_MOVE,
             });
@@ -855,6 +865,7 @@ pub fn encode(m: &Msg, b: &mut Vec<u8>) {
             b.push(round.custom);
             match body {
                 Body::None => {}
+                Body::SitOut(p) => b.extend_from_slice(&p.to_le_bytes()),
                 Body::Seat(id, s) => {
                     b.extend_from_slice(&id.to_le_bytes());
                     put_stamp(b, s.stamp);
@@ -993,6 +1004,7 @@ impl<'a> Reader<'a> {
         let round = Round { epoch, stamp, seed, n, seats, nseats, deck, table, parent, dealer, custom: self.lt(2)? };
         let body = match tag {
             T_NONE => Body::None,
+            T_SIT_OUT => Body::SitOut(self.u32()?),
             T_SEAT => {
                 let id = self.u32()?;
                 let stamp = self.stamp()?;

@@ -144,6 +144,20 @@ fn version_three_invites_and_saves_remain_readable() {
 }
 
 #[test]
+fn version_four_saves_restore_before_any_explicit_sitout_records() {
+    let i = invite(3);
+    let mut json = Json::parse(&i.json()).unwrap();
+    json.set("protocol", Json::Num(4.0));
+    let old = Invite::parse(&json.to_string(), &i.room).unwrap();
+    let mut a = open(&old, 1);
+    submit(&mut a, "saved v4");
+    let mut b = open(&old, 1);
+    assert!(b.restore(&a.snapshot(), 4));
+    assert_eq!(b.shared, a.shared);
+    assert_eq!(b.dealable(), a.dealable());
+}
+
+#[test]
 fn two_to_twelve_people_can_write_apart_reload_and_merge_the_same_round() {
     for n in 2..=MAX_PLAYERS {
         let i = invite(n);

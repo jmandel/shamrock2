@@ -118,7 +118,15 @@ function audit() {
   }
   for (let i = 0; i < ctl.length; i++) for (let j = i + 1; j < ctl.length; j++) {
     if (ctl[i].contains(ctl[j]) || ctl[j].contains(ctl[i])) continue;
-    const a = ctl[i].getBoundingClientRect(), c = ctl[j].getBoundingClientRect();
+    // Scrolled-out checkbox rows have boxes behind the fixed footer, but
+    // those pixels are clipped. Compare the portions actually visible.
+    const visible = (el) => {
+      const r = el.getBoundingClientRect(), sc = scroller(el);
+      if (!sc) return r;
+      const b = sc.getBoundingClientRect();
+      return { left: Math.max(r.left, b.left), right: Math.min(r.right, b.right), top: Math.max(r.top, b.top), bottom: Math.min(r.bottom, b.bottom) };
+    };
+    const a = visible(ctl[i]), c = visible(ctl[j]);
     if (Math.min(a.right, c.right) - Math.max(a.left, c.left) > 2 && Math.min(a.bottom, c.bottom) - Math.max(a.top, c.top) > 2) out.push(['overlap', name(ctl[i]), name(ctl[j])]);
   }
   if (sheet) {
@@ -201,7 +209,10 @@ try {
   await A.page.evaluate(() => document.querySelectorAll('.overlay').forEach((o) => o.classList.remove('open')));
 
   // ---- writing ------------------------------------------------------------------------
-  await A.tool('start_round');
+  await A.page.click('#go');
+  await A.page.waitForSelector('#dealSheet.open');
+  await snap('05b-choose-players', A);
+  await A.page.click('#dealConfirm');
   await until(async () => (await Promise.all(all.map((d) => d.table()))).every((t) => t.phase === 'writing'));
   await snap('06-writing-tip', A);
   // The clue editor open on a leaf, with a long clue typed in.

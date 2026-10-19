@@ -142,6 +142,12 @@
   .sheet textarea { resize: vertical; min-height: 120px; }
   .checkField { display: flex; align-items: center; gap: 10px; min-height: 44px; cursor: pointer; }
   .checkField input { width: 22px; height: 22px; flex: none; accent-color: var(--go); }
+  .roundPlayer { display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 10px 12px; border-radius: 14px; background: var(--menu-item); cursor: pointer; }
+  .roundPlayer input { width: 24px; height: 24px; flex: none; accent-color: var(--go); }
+  .roundPlayer > span { min-width: 0; }
+  .roundPlayer b { display: block; font-size: 18px; }
+  .roundPlayer small { display: block; color: var(--dim); font-size: 14px; margin-top: 3px; }
+  #dealList { overflow-y: auto; max-height: 50vh; min-height: 64px; flex-shrink: 1; }
   .inviteSeat { display: flex; flex-direction: column; gap: 4px; min-height: 76px; padding: 15px 18px; text-align: left; border-radius: 14px; background: var(--menu-item); }
   .inviteSeat strong { font-size: 22px; overflow-wrap: anywhere; }
   .inviteSeat small { font-size: 15px; color: var(--dim); }
@@ -403,6 +409,16 @@
     <div class="list recapList" id="recapList"></div>
     <div class="row"><button id="recapShare">Share</button><button class="go grow" id="recapNext">Next round</button><button id="recapClose">Close</button></div>
   </div>
+</div>
+<div class="overlay" id="dealSheet">
+  <form class="sheet" id="dealForm">
+    <h2 id="dealHead">Who's playing?</h2>
+    <p id="dealIntro"></p>
+    <p id="dealWarning" class="tip" hidden></p>
+    <div class="list" id="dealList" role="group" aria-labelledby="dealHead"></div>
+    <p id="dealError" role="alert" hidden></p>
+    <div class="row"><button type="submit" class="go grow" id="dealConfirm">Deal round</button><button type="button" id="dealCancel">Cancel</button></div>
+  </form>
 </div>
 <div class="overlay" id="shareSheet">
   <div class="sheet">

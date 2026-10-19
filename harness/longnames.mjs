@@ -37,6 +37,7 @@ async function shot(tag, k = 0) {
 const [A, B, C] = ps;
 await shot('1-lobby');
 await A.click('#go');
+await A.click('#dealConfirm');
 await Promise.all(ps.map((p) => p.waitForFunction(() => window.__cl.digest().phase === 'writing')));
 async function write(p, n = 4, mid) {
   await p.waitForFunction(() => window.__cl.card(0)[0] >= 0);
