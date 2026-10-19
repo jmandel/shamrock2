@@ -650,6 +650,11 @@ function renderUi(force = false) {
   if (!force && key === lastUi) return;
   lastUi = key;
   if ($('joinSheet').classList.contains('open')) renderJoin();
+  $('lobby').hidden = !s.lobby;
+  if (s.lobby) {
+    $('lobbyTitle').textContent = s.lobby.title;
+    $('lobbyText').textContent = s.lobby.text;
+  }
 
   // The strip as the Rust core words it (see app/page.rs): this only
   // shows it. Side effects of the page's own stay here: tips once per
@@ -710,8 +715,8 @@ function placeGo() {
   Object.assign(goBtn.style, { left: `${c.left + px}px`, top: `${c.top + py}px`, fontSize: `${Math.min(26, Math.max(17, w / 8))}px` });
 }
 
-// Show the longest version of the status that fits beside the buttons (the
-// last one is cut with … if even that doesn't). Re-fit when the width changes.
+// Wide screens choose the longest status that fits beside the buttons.
+// Phones give the full status its own row and let it wrap.
 let hintVariants = [];
 function fitHint(hint) {
   hintVariants = [hint].flat();

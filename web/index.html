@@ -65,6 +65,13 @@
 
   #stage { position: relative; flex: 1; min-height: 0; }
   canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
+  #stage:has(#lobby:not([hidden])) canvas { visibility: hidden; }
+  #lobby { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; overflow-y: auto; }
+  #lobby > div { max-width: 340px; margin-block: auto; text-align: center; }
+  #lobby svg { width: 72px; height: 72px; }
+  #lobby h1 { font: 600 30px/1.15 var(--serif); margin: 18px 0 12px; }
+  #lobby p { font-size: 18px; line-height: 1.5; color: var(--dim); margin: 0; }
+  body.home #lobby { display: none; }
   /* Pinches zoom the board (in-app), never the page: a page zoomed past the
      dock leaves the board filling the screen with no way back. */
   html, body { touch-action: pan-x pan-y; }
@@ -83,8 +90,8 @@
   .happened small { color: var(--dim); display: block; }
   .happened button { margin-top: 6px; }
 
-  /* The dock is one thin strip: a one-line status, the controls this moment
-     needs, and the main button. Everything else lives in the ⋯ menu. */
+  /* The dock keeps the status beside the controls on wide screens and
+     above them on phones. Everything else lives in the ⋯ menu. */
   #dock { position: relative; display: flex; align-items: center; gap: 8px; padding: 4px 6px calc(4px + env(safe-area-inset-bottom, 0px)) 10px; background: var(--bar); }
   #segs { position: absolute; left: 0; right: 0; top: 0; display: flex; gap: 3px; height: 5px; }
   #segs i { flex: 1; opacity: .35; background: currentColor; transition: opacity .35s ease; }
@@ -104,12 +111,13 @@
   .stepper button { min-height: 40px; min-width: 38px; padding: 0; background: transparent; font-size: 22px; }
   .stepper button:disabled { opacity: .3; }
   .stepper span { padding: 0 2px; white-space: nowrap; }
-  @media (max-width: 480px) { .go { padding: 10px 16px; } #hint { font-size: 15px; } }
-  /* Two choices need room for the status to remain readable on a phone. */
+  /* Status text gets the full phone width, including connection errors. */
   @media (max-width: 480px) {
-    #dock:has(#alt:not([hidden])):has(#go:not([hidden]):not(.near)) { flex-wrap: wrap; }
-    #dock:has(#alt:not([hidden])):has(#go:not([hidden]):not(.near)) #hint { order: -1; flex-basis: 100%; line-height: 28px; }
-    #dock:has(#alt:not([hidden])):has(#go:not([hidden]):not(.near)) #dockBtns { margin-left: auto; }
+    .go { padding: 10px 16px; }
+    #dock { flex-wrap: wrap; gap: 6px; }
+    #hint { order: -1; flex-basis: 100%; padding: 6px 4px 0; font-size: 17px; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; overflow: visible; text-overflow: clip; }
+    #hint.pick { min-height: 44px; }
+    #dockBtns { margin-left: auto; max-width: calc(100% - 50px); flex-wrap: wrap; justify-content: flex-end; }
   }
   @media (max-width: 360px) {
     #dock:has(#alt:not([hidden])) #go, #dock:has(#alt:not([hidden])) #alt { font-size: 14px; padding: 9px 10px; }
@@ -246,6 +254,13 @@
 </svg>
 <div id="stage">
   <canvas id="c"></canvas>
+  <div id="lobby" hidden>
+    <div>
+      <svg aria-hidden="true"><use href="#mark"/></svg>
+      <h1 id="lobbyTitle"></h1>
+      <p id="lobbyText"></p>
+    </div>
+  </div>
   <div id="top">
     <button id="unzoom" hidden aria-label="Reset zoom">1×</button>
   </div>
