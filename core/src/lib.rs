@@ -111,6 +111,15 @@ pub extern "C" fn on_message(len: u32, link: u32) {
 #[no_mangle]
 pub extern "C" fn set_links(n: u32) {
     g().app.links = n;
+    if n > 0 {
+        g().app.connection_failed = false;
+    }
+}
+
+/// A discovered peer could not connect (as distinct from nobody being here).
+#[no_mangle]
+pub extern "C" fn set_connection_failed(failed: u32) {
+    g().app.connection_failed = failed != 0 && g().app.links == 0;
 }
 
 /// Solo play from a share link (no table, no connections).

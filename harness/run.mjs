@@ -667,7 +667,7 @@ try {
   console.log('\n# reconnecting');
   {
     const LATE = RELAY + 7;
-    const url = `http://localhost:${PORT}/?signal=ws://localhost:${LATE}&rejoin=1500#late-relay`;
+    const url = `http://localhost:${PORT}/?signal=ws://localhost:${LATE}#late-relay`;
     const pages = [];
     for (const nm of ['Lu', 'Mo']) {
       const page = await (await browser.newContext({ viewport: { width: 1000, height: 800 } })).newPage();

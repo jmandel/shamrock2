@@ -382,6 +382,9 @@ pub struct App {
     pub solo: bool,
     /// Connections open to other devices right now (told by the shell).
     pub links: u32,
+    /// Discovery found another device, but its connection attempt failed.
+    /// Local transport status only; never saved or sent to other players.
+    pub connection_failed: bool,
     /// Soft glow on the leaves after a clover is completed (1 → 0).
     glow: f32,
     last_done: Option<(u32, bool)>,
@@ -448,6 +451,7 @@ impl App {
             custom_room: false,
             solo: false,
             links: 0,
+            connection_failed: false,
             glow: 0.0,
             last_done: None,
             last_guess: None,

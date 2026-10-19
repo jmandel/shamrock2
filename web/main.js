@@ -2,6 +2,7 @@
 // hit-testing, animation and drawing decisions live in core.wasm (Rust).
 
 import { agentTools, offerTools } from './agent.js';
+import { loadIceServers } from './rtc-config.js';
 
 const params = new URLSearchParams(location.search);
 // No room in the link (and no shared boards): the home page, listing this
@@ -780,7 +781,7 @@ function startAt(room, name, invite) {
 }
 // Links to other tables keep the network this page is on (a private
 // signaling relay, a relay list, test switches), and nothing else.
-const NET_PARAMS = ['signal', 'relays', 'net', 'rejoin', 'chaos'];
+const NET_PARAMS = ['signal', 'relays', 'net', 'chaos'];
 const netQuery = () => { const q = new URLSearchParams(NET_PARAMS.filter((k) => params.has(k)).map((k) => [k, params.get(k)])).toString(); return q ? `?${q}` : ''; };
 const tableUrl = (room, invite = room === roomId ? invitePayload : recall(`shamrock:${room}:invite`)) => {
   const q = new URLSearchParams(netQuery());
@@ -1023,38 +1024,44 @@ async function connect() {
   // picks 5 hobby relays by hashing the app id, and when they're down or
   // slow nobody meets until a reload happens to get through; these are
   // large, widely run open relays, all used at once.
-  const config = { appId: 'shamrock-p2p', relayConfig: { urls: signal ? [signal] : RELAYS } };
-  let room, action;
+  const turnConfig = await loadIceServers().catch((e) => { console.warn(e.message); return []; });
+  const config = { appId: 'shamrock-p2p', relayConfig: { urls: signal ? [signal] : RELAYS }, turnConfig };
+  let room, action, generation = 0;
   const enter = () => {
-    room = lib.joinRoom(config, roomId);
+    const current = ++generation;
+    room = lib.joinRoom(config, roomId, { onJoinError: ({ error }) => {
+      if (current !== generation) return;
+      stats.connectionError = error;
+      X.set_connection_failed(1);
+      renderUi(true);
+    } });
     action = room.makeAction('m');
-    action.onMessage = (data, { peerId }) => receive(new Uint8Array(data), linkId(peerId));
-    room.onPeerJoin = joined;
-    room.onPeerLeave = left;
+    action.onMessage = (data, { peerId }) => { if (current === generation) receive(new Uint8Array(data), linkId(peerId)); };
+    room.onPeerJoin = (id) => { if (current === generation) { stats.connectionError = null; joined(id); } };
+    room.onPeerLeave = (id) => { if (current === generation) left(id); };
     stats.joins++;
   };
   enter();
-  // Alone? Announce again from scratch (what a reload did), soon at first,
-  // then backing off; and at once when the page comes back to the
-  // foreground, since phones drop sockets in background tabs.
-  let since = performance.now(), wait = REJOIN_FIRST_MS;
-  const rejoin = () => {
-    try { room.leave(); } catch {}
-    enter();
-    since = performance.now();
+  // Trystero retries announcements, sockets and failed peer connections.
+  // Leaving every 12 seconds cancelled ICE negotiation before its own timeout
+  // and suppressed the useful "found a peer, couldn't connect" error.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && navigator.onLine) lib.resumeRelayReconnection?.();
+  });
+  const leave = () => {
+    if (!room) return;
+    ++generation;
+    room.leave();
+    room = action = null;
+    for (const id of [...peers]) left(id);
   };
-  setInterval(() => {
-    if (peers.size) { since = performance.now(); wait = REJOIN_FIRST_MS; return; }
-    if (performance.now() - since > wait) { wait = Math.min(wait * 1.6, 30000); rejoin(); }
-  }, 1000);
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && !peers.size) rejoin(); });
-  addEventListener('pagehide', () => room.leave());
-  return { send: (u8) => peers.size && action.send(u8), rejoin };
+  addEventListener('pagehide', leave);
+  addEventListener('pageshow', (e) => { if (e.persisted && !room) enter(); });
+  return { send: (u8) => peers.size && action?.send(u8) };
 }
 // ?relays=host1,host2 overrides the list (for testing from a phone).
 const RELAYS = params.get('relays')?.split(',').map((h) => (h.includes('://') ? h : `wss://${h}`))
   ?? ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net', 'wss://nostr.mom', 'wss://relay.snort.social', 'wss://offchain.pub'];
-const REJOIN_FIRST_MS = +(params.get('rejoin') ?? 12000);
 
 // ---- this table, kept on the device -------------------------------------------
 
