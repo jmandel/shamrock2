@@ -285,6 +285,8 @@ await scenario('two groups played apart in one room, then meet, and one moves aw
   for (const p of cd) await writeAll(p, p.name.toLowerCase());
   await until(async () => (await cd[0].table()).phase === 'guessing');
   await cd[0].page.evaluate(() => document.getElementById('redealBtn').click());
+  await cd[0].page.waitForSelector('#dealSheet.open');
+  await cd[0].page.click('#dealConfirm');
   await until(async () => (await cd[1].table()).round === 2);
   await savedSince(cd, room, Date.now());
   for (const p of cd) await p.page.close({ runBeforeUnload: true });

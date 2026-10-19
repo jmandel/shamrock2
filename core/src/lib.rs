@@ -222,6 +222,15 @@ pub extern "C" fn action(code: u32) {
     g().app.action(code);
 }
 
+/// Checked players and the reviewed roster/round (JSON). Empty on success,
+/// otherwise the message to show beside the checklist.
+#[no_mangle]
+pub extern "C" fn deal_selected(len: u32) -> u32 {
+    let input = inbox_str(len);
+    let result = g().app.deal_selected(&input).err().unwrap_or_default();
+    to_scratch(result)
+}
+
 /// Name is in the inbox. Joining with an existing name takes that seat over.
 #[no_mangle]
 pub extern "C" fn join(len: u32) {

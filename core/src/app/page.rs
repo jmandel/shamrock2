@@ -16,6 +16,7 @@ pub const SHEET_PLAYERS: u32 = 2;
 pub const SHEET_CLOVERS: u32 = 3;
 pub const SHEET_SHARE: u32 = 4;
 pub const SHEET_RECAP: u32 = 5;
+pub const SHEET_DEAL: u32 = 6;
 
 /// `App::action` codes. The strip names them (`"deal"`, `"ready"`, …) for
 /// the shell, which also has two of its own: `"join"` and `"ownTable"`.
@@ -150,7 +151,7 @@ impl App {
             whose.clone(),
         ];
         let solved = writer.map(|w| format!("Solved {} clover!", bold(&format!("{}'s", self.short_name(w))))).unwrap_or_default();
-        let dealable = !self.dealable().is_empty();
+        let dealable = !s.players().is_empty();
         let mut st = Strip { segs: phase == Phase::Writing, decoy_label: plural(self.my_sub().decoys as usize, "decoy"), ..Strip::default() };
 
         if self.solo {
@@ -191,6 +192,7 @@ impl App {
                 }
                 Phase::Writing => {
                     let in_round = self.seat.is_some_and(|me| s.round.players().contains(&me));
+                    let waiting_round = if self.seat.is_some_and(|me| s.sitting_out.contains(&me)) { "Sitting out this round" } else { "You're in next round" };
                     let sub = self.my_sub();
                     let filled = sub.clues.iter().filter(|c| !c.is_empty()).count();
                     let round = s.round_players();
@@ -203,7 +205,7 @@ impl App {
                         waiting.push(format!("Waiting for {}", left.len()));
                     }
                     if !in_round {
-                        st.hint = vec!["You're in the next round".into()];
+                        st.hint = vec![waiting_round.into()];
                     } else if !sub.ready {
                         st.tip = Some("write");
                         st.hint = vec![if filled < 4 { format!("{filled} of 4 clues written") } else { format!("Clues done · {}", plural(sub.decoys as usize, "decoy")) }];
@@ -219,7 +221,7 @@ impl App {
                     } else if (sub.ready || !in_round) && ready > 0 && ready < round.len() {
                         // The status beside it names who is missing, so the button needn't.
                         st.alt = button("Start anyway", true, "proceed");
-                        st.hint = if sub.ready { waiting } else { [vec![format!("You're in next round · waiting for {who}")], waiting].concat() };
+                        st.hint = if sub.ready { waiting } else { [vec![format!("{waiting_round} · waiting for {who}")], waiting].concat() };
                     }
                     // Everyone dealt in has gone and nobody submitted: nothing
                     // to start with, so offer a fresh deal for whoever is here.
@@ -329,6 +331,35 @@ impl App {
         let present = self.present();
         let color = |p: u32| s_(&format!("#{:06x}", self.color_of(p) >> 8));
         let v = match kind {
+            SHEET_DEAL => {
+                let defaults = self.dealable();
+                let mut candidates = s.players();
+                candidates.sort_by_key(|p| self.name_of(*p).to_lowercase());
+                let rows = candidates.into_iter().map(|p| {
+                    let here = present.contains(&p);
+                    let previous = s.round.players().contains(&p);
+                    let note = if s.sitting_out.contains(&p) { "sitting out" }
+                        else if previous { "played last round" }
+                        else if s.round.n > 0 && here { "new for this round" }
+                        else { "" };
+                    let status = if here { "Here" } else { "Away" };
+                    obj(vec![
+                        ("id", Json::Num(p as f64)), ("name", s_(&self.name_of(p))),
+                        ("selected", Json::Bool(defaults.contains(&p))),
+                        ("note", s_(&if note.is_empty() { status.into() } else { format!("{status} · {note}") })),
+                    ])
+                }).collect();
+                obj(vec![
+                    ("round", s_(&self.round_token())),
+                    ("head", s_(&if s.round.n == 0 { "Who's playing?".into() } else { format!("Players for round {}", s.round.n + 1) })),
+                    ("intro", s_(if s.round.n == 0 { "Choose who to deal in." } else { "Previous players and new arrivals are selected. Away players keep their place; unchecked players sit out until selected again." })),
+                    ("warning", if matches!(s.phase(), Phase::Lobby | Phase::End) { Json::Null } else { s_("Dealing ends the current round and gives the selected players new cards.") }),
+                    ("max", Json::Num(MAX_PLAYERS as f64)),
+                    ("labels", Json::Arr((0..=MAX_PLAYERS).map(|n| s_(&if n == 0 { "Select players".into() } else { format!("Deal to {}", plural(n, "player")) })).collect())),
+                    ("limit", s_(&format!("Select at most {MAX_PLAYERS} players."))),
+                    ("rows", Json::Arr(rows)),
+                ])
+            }
             SHEET_JOIN if self.invitation.is_some() => {
                 let invite = self.invitation.as_ref().unwrap();
                 let rows = invite.names.iter().map(|name| {
@@ -375,6 +406,7 @@ impl App {
                         let away = !present.contains(&p);
                         let doing = match phase {
                             _ if away => "away",
+                            Phase::Writing if s.sitting_out.contains(&p) => "sitting out",
                             Phase::Writing if !s.round.players().contains(&p) => "in the next round",
                             Phase::Writing if s.is_ready(p) => "submitted",
                             Phase::Writing => "writing",
@@ -437,7 +469,7 @@ impl App {
                     ("boards", Json::Arr(boards)),
                     ("share", Json::Bool(!self.solo)),
                     ("next", Json::Bool(!self.solo && seated)),
-                    ("nextEnabled", Json::Bool(!self.dealable().is_empty())),
+                    ("nextEnabled", Json::Bool(!s.players().is_empty())),
                 ])
             }
         };
@@ -450,7 +482,7 @@ impl App {
         let new = self.shared.round;
         let who = if new.dealer != 0 { self.name_of(new.dealer) } else { "Someone".into() };
         let dealt_in = self.seat.is_some_and(|me| new.players().contains(&me));
-        let later = if dealt_in { "" } else { " You're in next round." };
+        let later = if dealt_in { "" } else if self.seat.is_some_and(|p| self.shared.sitting_out.contains(&p)) { " You're sitting out this round." } else { " You're in next round." };
         let n = new.n;
         let mut text = match kind {
             "next" => format!("{who} dealt round {n}.{later}"),

@@ -570,7 +570,7 @@ $('copyLink').onclick = async () => {
 };
 $('switchBtn').onclick = () => { closeSheets(); openJoin(); };
 $('watchMenuBtn').onclick = watch;
-$('redealBtn').onclick = () => { closeSheets(); act('redeal'); };
+$('redealBtn').onclick = () => openDeal(true);
 $('newGameBtn').onclick = () => { closeSheets(); act('newGame'); };
 $('unsubmitBtn').onclick = () => { closeSheets(); act('ready'); };
 $('freshBtn').onclick = () => { closeSheets(); freshTable(); };
@@ -643,7 +643,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
 // Text from the core with names marked \u0001…\u0002 for bold, as HTML.
 const marked = (t) => esc(t).replace(/\u0001/g, '<b>').replace(/\u0002/g, '</b>');
 // What a sheet shows, as the core has it (see app/page.rs).
-const SHEET = { join: 1, players: 2, clovers: 3, share: 4, recap: 5 };
+const SHEET = { join: 1, players: 2, clovers: 3, share: 4, recap: 5, deal: 6 };
 const sheet = (kind) => scratchJson(X.sheet(SHEET[kind]));
 // Core functions over text (parts joined by U+001F), returning text.
 const coreText = (fn, parts, ...args) => scratchText(fn(writeText(parts.join('\u001f')), ...args));
@@ -655,6 +655,7 @@ function renderUi(force = false) {
   if (!force && key === lastUi) return;
   lastUi = key;
   if ($('joinSheet').classList.contains('open')) renderJoin();
+  if ($('dealSheet').classList.contains('open')) renderDeal();
   $('lobby').hidden = !s.lobby;
   if (s.lobby) {
     $('lobbyTitle').textContent = s.lobby.title;
@@ -685,7 +686,7 @@ function renderUi(force = false) {
       return seg;
     }));
   }
-  const DO = { join: openJoin, ownTable };
+  const DO = { join: openJoin, ownTable, deal: () => openDeal(false), redeal: () => openDeal(true) };
   const press = (b) => DO[b.act] ?? (() => act(b.act));
   $('hint').classList.toggle('pick', !!st.tap);
   $('hint').onclick = st.tap === 'clovers' ? openClovers : st.tap === 'recap' ? openRecap : null;
@@ -750,6 +751,70 @@ function tip(kind) {
 canvas.addEventListener('pointerdown', () => $('toast').classList.remove('show'));
 
 // ---- choosing the clover, inviting ---------------------------------------------
+
+let dealDraft = null;
+function openDeal(replace = false) {
+  const r = sheet('deal');
+  dealDraft = { round: r.round, replace, choices: new Map(r.rows.map((p) => [p.id, p.selected])) };
+  $('dealError').hidden = true;
+  closeSheets();
+  $('dealSheet').classList.add('open');
+  renderDeal();
+}
+function renderDeal() {
+  if (!dealDraft) return;
+  const r = sheet('deal');
+  // Another device dealt while this checklist was open. Showing that new
+  // round is safer than leaving an old confirmation over it.
+  if (r.round !== dealDraft.round) {
+    $('dealSheet').classList.remove('open');
+    dealDraft = null;
+    return;
+  }
+  $('dealHead').textContent = r.head;
+  $('dealIntro').textContent = r.intro;
+  $('dealWarning').hidden = !r.warning;
+  $('dealWarning').textContent = r.warning ?? '';
+  const list = $('dealList'), current = new Map([...list.children].map((el) => [+el.dataset.id, el]));
+  const rows = r.rows.map((p) => {
+    if (!dealDraft.choices.has(p.id)) dealDraft.choices.set(p.id, p.selected);
+    let label = current.get(p.id);
+    if (!label) {
+      label = document.createElement('label');
+      label.className = 'roundPlayer'; label.dataset.id = p.id;
+      label.innerHTML = '<input type="checkbox"><span><b></b><small></small></span>';
+      label.querySelector('input').onchange = (e) => {
+        dealDraft.choices.set(p.id, e.target.checked);
+        $('dealError').hidden = true;
+        renderDeal();
+      };
+    }
+    label.querySelector('input').checked = dealDraft.choices.get(p.id);
+    label.querySelector('b').textContent = p.name;
+    label.querySelector('small').textContent = p.note;
+    return label;
+  });
+  // Keep focused checkboxes in place while a phone arrives or goes away.
+  for (const old of [...list.children]) if (!rows.includes(old)) old.remove();
+  rows.forEach((row, i) => { if (list.children[i] !== row) list.insertBefore(row, list.children[i] ?? null); });
+  const n = rows.filter((row) => row.querySelector('input').checked).length;
+  $('dealConfirm').textContent = r.labels[n] ?? r.limit;
+  $('dealConfirm').disabled = n === 0 || n > r.max || (!!r.warning && !dealDraft.replace);
+}
+$('dealForm').onsubmit = (e) => {
+  e.preventDefault();
+  if (!dealDraft || $('dealConfirm').disabled) return;
+  const roster = [...$('dealList').children].map((el) => +el.dataset.id);
+  const players = roster.filter((id) => dealDraft.choices.get(id));
+  const error = scratchText(X.deal_selected(writeText(JSON.stringify({ round: dealDraft.round, replace: dealDraft.replace, roster, players }))));
+  if (error) {
+    renderDeal();
+    $('dealError').textContent = error; $('dealError').hidden = false;
+    return;
+  }
+  stats.presses++; dealDraft = null; closeSheets(); drainOutbox(); renderUi(true);
+};
+$('dealCancel').onclick = () => { dealDraft = null; closeSheets(); };
 
 function openClovers() {
   const list = $('cloverList');
@@ -940,7 +1005,7 @@ function openRecap() {
   $('recapSheet').classList.add('open');
 }
 $('recapShare').onclick = openShare;
-$('recapNext').onclick = () => { closeSheets(); act('deal'); };
+$('recapNext').onclick = () => openDeal(false);
 $('recapClose').onclick = () => closeSheets();
 let recapShown = null;
 function openLog() {
@@ -1219,6 +1284,12 @@ const probe = (fn, ...a) => { fn(...a); return Array.from(new Float32Array(X.mem
 
 const tools = agentTools({
   X, ui, act, joinAs, writeText, probe,
+  roundPlan: () => sheet('deal'),
+  dealSelected: (plan, players) => {
+    const error = scratchText(X.deal_selected(writeText(JSON.stringify({ round: plan.round, roster: plan.rows.map((p) => p.id), players }))));
+    drainOutbox(); renderUi(true);
+    return error;
+  },
   agentView: () => scratchJson(X.agent_view()),
   review: () => scratchJson(X.review()),
   status: () => $('hint').textContent,

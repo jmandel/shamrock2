@@ -280,6 +280,7 @@ try {
   await normal.fill('#nameInput', 'Normal');
   await normal.click('#joinBtn');
   await normal.click('#go');
+  await normal.click('#dealConfirm');
   await write(normal, 'Normal', ['top']);
   await saveAndAge(normal, 365);
   await normal.close();

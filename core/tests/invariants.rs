@@ -210,6 +210,7 @@ fn wire_roundtrip() {
         op(Body::Check(9, Check { attempts: 1, mask: 0b0101, stamp: s, tried: 1 << 77 | 5 })),
         op(Body::Next(3, s)),
         op(Body::Focus(9, s)),
+        op(Body::SitOut(12)),
         op(Body::Move(st(1, 5), Moved { room: "quiet-heron-dell".into(), by: 9, stamp: s })),
         Msg::Hello { device: 5, seat: 9, sum: 0xdead_beef, ver: PROTOCOL },
         Msg::Cursor { device: 5, seat: 9, kind: 2, x: 10.0, y: -10.0, card: Some(3) },
@@ -387,6 +388,119 @@ fn starting_fixes_the_roster_late_joiners_wait_for_next_round() {
     t.apps[k].action(1);
     t.pump();
     assert!(t.apps[0].shared.round.players().contains(&late));
+}
+
+fn selected_deal(a: &App, players: &[u32], replace: bool) -> String {
+    format!(r#"{{"round":"{}","roster":{:?},"players":{:?},"replace":{replace}}}"#, a.round_token(), a.shared.players(), players)
+}
+
+#[test]
+fn next_round_keeps_away_players_adds_arrivals_and_remembers_explicit_sitouts() {
+    let mut t = Table::new(3);
+    t.apps[0].action(1);
+    t.pump();
+    let original: Vec<u32> = t.apps.iter().map(|a| a.seat.unwrap()).collect();
+    let k = t.add(app(42));
+    t.apps[k].join("New arrival");
+    t.pump();
+    let new = t.apps[k].seat.unwrap();
+    t.apps[0].on_link_lost(3);
+    assert!(!t.apps[0].present().contains(&original[2]));
+    assert_eq!(t.apps[0].dealable().len(), 4, "away previous players and new arrivals are all selected");
+    let plan = cloverleaf::json::Json::parse(&t.apps[0].sheet_json(cloverleaf::app::SHEET_DEAL)).unwrap();
+    let away = plan.get("rows").arr().iter().find(|r| r.get("id").num() == Some(original[2] as f64)).unwrap();
+    assert_eq!(away.get("selected").bool(), Some(true));
+    assert_eq!(away.get("note").str(), Some("Away · played last round"));
+    let selected = [original[0], original[2], new];
+    let input = selected_deal(&t.apps[0], &selected, true);
+    t.apps[0].deal_selected(&input).unwrap();
+    t.pump();
+    assert!(t.digests_equal());
+    for a in &t.apps {
+        assert_eq!(a.shared.round.n, 2);
+        assert_eq!(a.shared.round.players().len(), 3);
+        assert!(!a.shared.round.players().contains(&original[1]));
+        assert!(!a.dealable().contains(&original[1]), "sitting out is shared, even while connected");
+        assert!(a.dealable().contains(&original[2]));
+    }
+    assert!(!t.apps[1].can_write());
+    t.apps[1].links = 3;
+    assert_eq!(t.apps[1].strip().hint[0], "Sitting out this round");
+    assert!(t.apps[1].sheet_json(SHEET_PLAYERS).contains("\"doing\":\"sitting out\""));
+    let old_ops = t.apps[0].shared.all_ops();
+    let mut restored = app(99);
+    assert!(restored.restore(&t.apps[0].snapshot(), PROTOCOL as u32));
+    restored.join("Player 1");
+    assert!(!restored.dealable().contains(&original[1]), "reloading or switching devices doesn't undo a sitout");
+    // A different dealer carries the selection forward.
+    t.apps[k].action(6);
+    t.pump();
+    assert!(!t.apps[0].shared.round.players().contains(&original[1]));
+    let input = selected_deal(&t.apps[1], &t.apps[1].shared.players(), true);
+    t.apps[1].deal_selected(&input).unwrap();
+    t.pump();
+    assert_eq!(t.apps[0].shared.round.players().len(), 4);
+    assert!(t.apps[0].shared.sitting_out.is_empty());
+    for op in old_ops { t.apps[0].shared.apply(&op); }
+    assert!(t.apps[0].shared.sitting_out.is_empty(), "old exclusions cannot undo a later selection");
+    assert!(t.digests_equal());
+}
+
+#[test]
+fn a_deal_only_uses_the_roster_and_round_that_were_reviewed() {
+    let mut t = Table::new(2);
+    let before = t.apps[0].snapshot();
+    let empty = selected_deal(&t.apps[0], &[], false);
+    assert!(t.apps[0].deal_selected(&empty).is_err());
+    let unknown = selected_deal(&t.apps[0], &[123], false);
+    assert!(t.apps[0].deal_selected(&unknown).is_err());
+    let me = t.apps[0].seat.unwrap();
+    let twice = selected_deal(&t.apps[0], &[me, me], false);
+    assert!(t.apps[0].deal_selected(&twice).is_err());
+    assert_eq!(before, t.apps[0].snapshot());
+    let stale_roster = selected_deal(&t.apps[0], &t.apps[0].dealable(), false);
+    let k = t.add(app(99));
+    t.apps[k].join("New arrival");
+    t.pump();
+    assert!(t.apps[0].deal_selected(&stale_roster).unwrap_err().contains("player list changed"));
+    let stale_round = selected_deal(&t.apps[0], &t.apps[0].dealable(), false);
+    t.apps[1].action(1);
+    t.pump();
+    assert!(t.apps[0].deal_selected(&stale_round).unwrap_err().contains("moved on"));
+    let in_progress = selected_deal(&t.apps[0], &t.apps[0].dealable(), false);
+    assert!(t.apps[0].deal_selected(&in_progress).unwrap_err().contains("still in progress"));
+    assert_eq!(t.apps[0].shared.round.n, 1);
+}
+
+#[test]
+fn an_overfull_table_can_choose_twelve_without_silently_dropping_anyone() {
+    let mut t = Table::new(MAX_PLAYERS + 1);
+    let all = t.apps[0].shared.players();
+    let too_many = selected_deal(&t.apps[0], &all, false);
+    assert!(t.apps[0].deal_selected(&too_many).unwrap_err().contains("at most 12"));
+    assert_eq!(t.apps[0].shared.round.n, 0);
+    let input = selected_deal(&t.apps[0], &all[..MAX_PLAYERS], false);
+    t.apps[0].deal_selected(&input).unwrap();
+    t.pump();
+    assert_eq!(t.apps[0].shared.round.players(), &all[..MAX_PLAYERS]);
+    assert_eq!(t.apps[0].shared.sitting_out.iter().copied().collect::<Vec<_>>(), vec![all[MAX_PLAYERS]]);
+    assert!(t.digests_equal());
+}
+
+#[test]
+fn an_absent_new_seat_is_not_mistaken_for_an_explicit_sitout() {
+    let mut t = Table::new(3);
+    let later = t.apps[2].seat.unwrap();
+    t.apps[0].on_link_lost(3);
+    assert!(!t.apps[0].dealable().contains(&later));
+    let input = selected_deal(&t.apps[0], &t.apps[0].dealable(), false);
+    t.apps[0].deal_selected(&input).unwrap();
+    t.pump();
+    assert!(!t.apps[0].shared.round.players().contains(&later));
+    assert!(!t.apps[0].shared.sitting_out.contains(&later));
+    t.apps[2].on_peer_join();
+    t.pump();
+    assert!(t.apps[0].dealable().contains(&later), "arrival selects a new player unless someone actually unchecked them");
 }
 
 #[test]

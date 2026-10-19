@@ -575,7 +575,7 @@ impl App {
                         Body::Start(s) | Body::Next(_, s) | Body::Focus(_, s) => *s,
                         Body::Card(_, _, c) => c.stamp,
                         Body::Check(_, c) => c.stamp,
-                        Body::None => op.round.stamp,
+                        Body::None | Body::SitOut(_) => op.round.stamp,
                     };
                     self.clock = self.clock.max(s.clock).max(op.round.stamp.clock);
                     // A late change to a round this device was pushed out of
@@ -1637,10 +1637,46 @@ impl App {
         }
     }
 
-    /// Who a new round would deal in: seated players at the table now.
+    /// Default next-round roster: keep the last round's active players,
+    /// including away phones, and add new arrivals who aren't sitting out.
     pub fn dealable(&self) -> Vec<u32> {
         let here = self.present();
-        self.shared.players().into_iter().filter(|p| here.contains(p)).collect()
+        let prev = self.shared.round.players();
+        self.shared.players().into_iter().filter(|p| (prev.contains(p) || here.contains(p)) && !self.shared.sitting_out.contains(p)).collect()
+    }
+
+    pub fn round_token(&self) -> String {
+        let stamp = self.shared.round.stamp;
+        format!("{}:{}", stamp.clock, stamp.peer)
+    }
+
+    /// Deal exactly the checked names. Both the round and candidate list
+    /// must still be the ones the person reviewed (presence may change).
+    pub fn deal_selected(&mut self, input: &str) -> Result<(), String> {
+        let v = crate::json::Json::parse(input).ok_or("Couldn't read the player list.")?;
+        if v.get("round").str() != Some(self.round_token().as_str()) {
+            return Err("The table has moved on. Review the players again.".into());
+        }
+        let ids = |key| -> Result<Vec<u32>, String> {
+            let raw = v.get(key);
+            let crate::json::Json::Arr(values) = raw else { return Err("Couldn't read the player list.".into()) };
+            let mut ids = BTreeSet::new();
+            for value in values {
+                let id = value.num().filter(|n| *n > 0.0 && *n <= u32::MAX as f64 && n.fract() == 0.0).ok_or("Couldn't read the player list.")? as u32;
+                if !ids.insert(id) { return Err("A player was listed twice.".into()); }
+            }
+            Ok(ids.into_iter().collect())
+        };
+        let roster = ids("roster")?;
+        if roster != self.shared.players() {
+            return Err("The player list changed. Review it before dealing.".into());
+        }
+        let players = ids("players")?;
+        if players.iter().any(|p| !roster.contains(p)) { return Err("One of those players has left the table.".into()); }
+        if v.get("replace").bool() != Some(true) && !matches!(self.shared.phase(), Phase::Lobby | Phase::End) {
+            return Err("This round is still in progress. Finish it, or use Deal new cards in the menu.".into());
+        }
+        self.deal_players(players)
     }
 
     fn ready_count(&self) -> usize {
@@ -1648,21 +1684,31 @@ impl App {
     }
 
     fn new_round(&mut self) {
-        let players = self.dealable();
-        if players.is_empty() {
-            return self.status("Join the table first.");
-        }
+        if let Err(e) = self.deal_players(self.dealable()) { self.status(&e); }
+    }
+
+    fn deal_players(&mut self, players: Vec<u32>) -> Result<(), String> {
+        if players.is_empty() { return Err("Select at least one player.".into()); }
+        if players.len() > MAX_PLAYERS { return Err(format!("Select at most {MAX_PLAYERS} players.")); }
         // A room with an imported clover opens by guessing it.
         let customs = Custom::all();
         if self.custom_room && self.shared.round.n == 0 && !customs.is_empty() {
-            return self.start_custom(customs, players);
+            self.start_custom(customs, players);
+            return Ok(());
         }
         let prev = self.shared.round;
         // Draw down the deck: this round deals after the cards the last one used.
         let deck = if prev.n == 0 { 0 } else { prev.deck + (prev.nseats as usize * MAX_CARDS) as u32 };
         let (seed, n, stamp) = (self.rng.next() as u32, prev.n + 1, self.stamp());
         let round = Round { epoch: prev.epoch, seed, n, stamp, deck, ..self.lineage(stamp) }.with_players(&players);
-        self.deal(round);
+        // Only unchecked defaults (or an existing sitout) are intentional
+        // exclusions. An absent seat that has never played isn't a sitout:
+        // if that person arrives later, they count as a new arrival.
+        let defaults = self.dealable();
+        let sitting_out: Vec<u32> = self.shared.players().into_iter()
+            .filter(|p| !players.contains(p) && (defaults.contains(p) || self.shared.sitting_out.contains(p))).collect();
+        self.deal_with_sitouts(round, &sitting_out);
+        Ok(())
     }
 
     /// Round 1 of a room with imported clovers: straight to guessing them.
@@ -1695,11 +1741,15 @@ impl App {
 
     /// Make `round` current here and announce it.
     fn deal(&mut self, round: Round) {
-        let op = Op { round, body: Body::None };
+        self.deal_with_sitouts(round, &[]);
+    }
+
+    fn deal_with_sitouts(&mut self, round: Round, sitting_out: &[u32]) {
+        let ops: Vec<Op> = core::iter::once(Body::None).chain(sitting_out.iter().map(|p| Body::SitOut(*p))).map(|body| Op { round, body }).collect();
         self.begin_change();
-        self.shared.apply(&op);
+        for op in &ops { self.shared.apply(op); }
         self.finish_change(true);
-        self.send(&[Msg::Op(op)]);
+        self.send(&ops.into_iter().map(Msg::Op).collect::<Vec<_>>());
     }
 
     /// This round's clovers selected by `mask`, each as a scrambled,
@@ -2319,6 +2369,7 @@ impl App {
             .iter()
             .map(|&p| {
                 let status = match phase {
+                    Phase::Writing if s.sitting_out.contains(&p) => "sitting out",
                     Phase::Writing if !s.round.players().contains(&p) => "next",
                     Phase::Writing if s.is_ready(p) => "ready",
                     Phase::Writing => "writing",
@@ -2369,7 +2420,7 @@ impl App {
             "{{\"phase\":\"{pname}\",\"seat\":{},\"seated\":{seated},\"name\":{},\"players\":[{}],\"watchers\":{},\
              \"inRound\":{in_round},\"ready\":{},\"canReady\":{},\"filled\":{},\"decoys\":{},\"progress\":[{}],\"readyCount\":{},\"dealable\":[{}],\
              \"k\":{k},\"n\":{n},\"writerName\":{},\"writerDecoys\":{},\"isWriter\":{},\"attempts\":{},\"done\":{},\
-             \"canCheck\":{},\"claimed\":{},\"round\":{},\"boards\":[{}],\"strip\":{},\"menu\":{},\"lobby\":{}}}",
+             \"canCheck\":{},\"claimed\":{},\"round\":{},\"roundToken\":{},\"sittingOut\":{:?},\"boards\":[{}],\"strip\":{},\"menu\":{},\"lobby\":{}}}",
             self.seat.map_or("null".into(), |x| x.to_string()),
             self.seat.map_or("null".into(), |x| json_str(&self.name_of(x))),
             rows.join(","),
@@ -2389,6 +2440,8 @@ impl App {
             self.can_check(),
             sc.claim.iter().filter(|c| c.is_some()).count(),
             s.round.n,
+            json_str(&self.round_token()),
+            s.sitting_out.iter().collect::<Vec<_>>(),
             boards.join(","),
             self.strip_json(),
             self.menu_json(),
