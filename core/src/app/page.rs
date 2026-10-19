@@ -98,6 +98,24 @@ fn button(label: &str, enabled: bool, act: &'static str) -> Option<Button> {
 }
 
 impl App {
+    /// Explain the empty table before a deal instead of showing a blank board.
+    pub(super) fn lobby_json(&self) -> String {
+        if self.view_phase() != Phase::Lobby || self.solo {
+            return "null".into();
+        }
+        let seated = self.seat.is_some_and(|me| self.shared.players().contains(&me));
+        let (title, text) = if !seated {
+            ("Take a seat", "Tap Join to play, or stay here to watch. The cards appear when someone starts the round.")
+        } else if self.custom_room && !Custom::all().is_empty() {
+            ("Ready to guess", "Invite friends, then tap Start guessing to open the clovers in this table.")
+        } else if self.dealable().len() < 2 {
+            ("Your table is open", "Invite friends, then tap Start to deal the cards. Your clover will appear here.")
+        } else {
+            ("Ready to deal", "Tap Start when everyone is here. Each player gets a clover to write clues for.")
+        };
+        format!("{{\"title\":{},\"text\":{}}}", json_str(title), json_str(text))
+    }
+
     /// How the strip calls a player: their first name, or the whole name
     /// when another player shares that first name; at most 12 characters,
     /// so a long name can't push the buttons off.

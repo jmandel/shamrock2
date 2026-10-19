@@ -2319,7 +2319,7 @@ impl App {
             "{{\"phase\":\"{pname}\",\"seat\":{},\"seated\":{seated},\"name\":{},\"players\":[{}],\"watchers\":{},\
              \"inRound\":{in_round},\"ready\":{},\"canReady\":{},\"filled\":{},\"decoys\":{},\"progress\":[{}],\"readyCount\":{},\"dealable\":[{}],\
              \"k\":{k},\"n\":{n},\"writerName\":{},\"writerDecoys\":{},\"isWriter\":{},\"attempts\":{},\"done\":{},\
-             \"canCheck\":{},\"claimed\":{},\"round\":{},\"boards\":[{}],\"strip\":{},\"menu\":{}}}",
+             \"canCheck\":{},\"claimed\":{},\"round\":{},\"boards\":[{}],\"strip\":{},\"menu\":{},\"lobby\":{}}}",
             self.seat.map_or("null".into(), |x| x.to_string()),
             self.seat.map_or("null".into(), |x| json_str(&self.name_of(x))),
             rows.join(","),
@@ -2342,6 +2342,7 @@ impl App {
             boards.join(","),
             self.strip_json(),
             self.menu_json(),
+            self.lobby_json(),
         )
     }
 
