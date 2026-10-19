@@ -29,6 +29,7 @@ const QUIET = new Set([
   'word_size', 'word_list', 'word_fit', 'card_word_scales', 'answer_rot', 'review', 'export_boards', 'scramble_boards', 'past_games', 'tables',
   'norm_room', 'suggest_room', 'probe_card', 'probe_slot', 'probe_board', 'probe_petal', 'probe_hub', 'probe_shaking', 'probe_shown_angle',
   'probe_word_px', 'probe_card_px',
+  'clover_preview', 'preview_cmd_ptr', 'preview_str_ptr',
 ]);
 let framePending = false, framesStarted = false;
 const X = Object.fromEntries(Object.entries(instance.exports).map(([k, v]) =>
@@ -64,16 +65,16 @@ const css = (c) => {
   return s;
 };
 
-function paint(n) {
-  const f = new Float32Array(X.memory.buffer, X.cmd_ptr(), n);
-  const u = new Uint32Array(X.memory.buffer, X.cmd_ptr(), n);
-  const strs = X.str_ptr();
+function paint(n, target = canvas, cmds = X.cmd_ptr(), strs = X.str_ptr(), camera = [cam.s, 0, 0, cam.s, cam.x * devicePixelRatio, cam.y * devicePixelRatio]) {
+  const ctx = target.getContext('2d');
+  const f = new Float32Array(X.memory.buffer, cmds, n);
+  const u = new Uint32Array(X.memory.buffer, cmds, n);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   for (let i = 0; i < n; ) {
     switch (f[i]) {
       case 1: // Rust's transform, under this device's zoom camera.
-        ctx.setTransform(cam.s, 0, 0, cam.s, cam.x * devicePixelRatio, cam.y * devicePixelRatio);
+        ctx.setTransform(...camera);
         ctx.transform(f[i + 1], f[i + 2], f[i + 3], f[i + 4], f[i + 5], f[i + 6]); i += 7; break;
       case 2: { // rrect x y w h r fill stroke lw
         ctx.beginPath(); ctx.roundRect(f[i + 1], f[i + 2], f[i + 3], f[i + 4], f[i + 5]);
@@ -118,7 +119,7 @@ function paint(n) {
         ctx.strokeStyle = css(u[i + 4]); ctx.lineWidth = f[i + 5]; ctx.stroke();
         i += 6; break;
       }
-      case 5: ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = css(u[i + 1]); ctx.fillRect(0, 0, canvas.width, canvas.height); i += 2; break;
+      case 5: ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = css(u[i + 1]); ctx.fillRect(0, 0, target.width, target.height); i += 2; break;
       default: throw new Error(`bad draw command ${f[i]} at ${i}`);
     }
   }
@@ -388,11 +389,9 @@ async function unseal(payload, salt) {
 // Card words are laid out per card from their real widths: measure every
 // card word (deck and any imported clovers) once the card font is in.
 let wordsMeasured = false;
-async function measureWords() {
-  await document.fonts?.load(`700 100px Figtree`).catch(() => {});
+function measureCardWords(list) {
   const c = document.createElement('canvas').getContext('2d');
   c.font = FONTS[1](100);
-  const list = scratchText(X.word_list()).split('\n');
   c.textBaseline = 'middle';
   // Width and how far below the centre line each word's letters reach.
   // …and, letter by letter, where each sits and how far it descends, so a
@@ -403,7 +402,12 @@ async function measureWords() {
     return `${w}\t${t.width.toFixed(2)}\t${t.actualBoundingBoxDescent.toFixed(2)}\t${letters}`;
   };
   X.set_word_widths(writeText(list.map(line).join('\n')));
+}
+async function measureWords() {
+  await document.fonts?.load(`700 100px Figtree`).catch(() => {});
+  measureCardWords(scratchText(X.word_list()).split('\n'));
   wordsMeasured = true;
+  paintClovers();
 }
 
 let customs = 0; // clovers loaded from a share link
@@ -603,6 +607,7 @@ function applyTheme() {
   X.set_theme(dark ? 1 : 0);
   document.querySelector('meta[name=theme-color]')?.setAttribute('content', getComputedStyle(document.documentElement).getPropertyValue('--bar').trim());
   $('themeBtn').textContent = `Theme: ${themePref}`;
+  paintClovers();
 }
 systemDark.addEventListener('change', applyTheme);
 $('themeBtn').onclick = () => {
@@ -897,18 +902,28 @@ function freshTable() {
   goTo(room);
 }
 
-/** A finished clover, read-only, as the core describes it (pages.rs):
- *  each clue on its leaf with the two words it linked, round the four
- *  answer cards showing only their outward words. */
+/** A finished clover, read-only, using the same renderer as the live board.
+ *  The linked words remain available as accessible text. */
 function cloverHtml(v) {
-  const leaf = (d) => `<span class="leafTag c${d}"><b>${esc(v.leaves[d].clue)}</b><small>${esc(v.leaves[d].words)}</small></span>`;
-  const card = (sp) => `<div class="mc">${v.cards[sp].map((w, e) => (w ? `<span class="${'trbl'[e]}">${esc(w)}</span>` : '')).join('')}</div>`;
+  const description = `${v.title}: ${v.leaves.map((l) => `${l.clue}: ${l.words}`).join('; ')}`;
   return `<div class="mini">
     <div class="who"><span>${esc(v.title)}</span><span class="badge${v.first ? ' first' : ''}">${esc(v.badge)}</span></div>
-    <div class="mclover">${leaf(0)}${leaf(1)}${leaf(2)}${leaf(3)}<div class="mgrid">${[0, 1, 3, 2].map(card).join('')}</div></div>
+    <canvas class="mclover" data-board="${esc(JSON.stringify(v))}" role="img" aria-label="${esc(description)}">${esc(description)}</canvas>
     ${v.decoys ? `<div class="decoys">${esc(v.decoys)}</div>` : ''}
   </div>`;
 }
+function paintClovers(root = document) {
+  for (const target of root.querySelectorAll('canvas.mclover')) {
+    // Past games may hold many rounds; allocate pixels only when expanded.
+    if (target.closest('details')?.open === false) continue;
+    const view = JSON.parse(target.dataset.board);
+    measureCardWords([...new Set(view.cards.flat())]);
+    const n = X.clover_preview(writeText(target.dataset.board));
+    target.width = target.height = 900;
+    paint(n, target, X.preview_cmd_ptr(), X.preview_str_ptr(), [1, 0, 0, 1, 450, 450]);
+  }
+}
+document.fonts?.ready.then(() => paintClovers());
 /** The end of a round: every clover's answer, one after another. */
 function openRecap() {
   const r = sheet('recap');
@@ -916,6 +931,7 @@ function openRecap() {
   $('recapHead').textContent = r.head;
   $('recapStats').innerHTML = r.stats.map(([v, k]) => `<div class="stat"><b>${esc(v)}</b>${esc(k)}</div>`).join('');
   $('recapList').innerHTML = r.boards.map(cloverHtml).join('');
+  paintClovers($('recapList'));
   $('recapList').scrollTop = 0;
   $('recapShare').hidden = !r.share;
   $('recapNext').hidden = !r.next;
@@ -936,6 +952,7 @@ function openLog() {
     d.innerHTML = `<summary><b>${when(e.at)}</b> · ${esc(e.line)}<br><small>${esc(e.who)}</small></summary>
       ${e.boards.map(cloverHtml).join('')}
       <div class="row"><button class="go replay"${e.replay ? '' : ' hidden'}>${esc(e.replay ?? '')}</button><button class="forget">Delete</button></div>`;
+    d.ontoggle = () => { if (d.open) paintClovers(d); };
     // Only clovers with all four clues can be played; half-written ones are for reading.
     d.querySelector('.replay').onclick = async () => { location.href = await shareFromText(e.replayTexts); };
     d.querySelector('.forget').onclick = () => {

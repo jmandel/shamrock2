@@ -30,6 +30,28 @@ fn app(seed: u64) -> App {
     a
 }
 
+#[test]
+fn recap_rendering_preserves_the_live_board_and_all_answer_words() {
+    let mut a = app(7);
+    a.join("Ana");
+    a.action(1);
+    a.q = 1;
+    a.angle = std::f32::consts::FRAC_PI_2;
+    a.dpr = 3.0;
+    a.render();
+    let before = (a.shared.digest(), a.ui_json(), a.cmds.iter().map(|f| f.to_bits()).collect::<Vec<_>>(), a.strs.clone(), a.outbox.clone());
+    let board = cloverleaf::json::Json::parse(r#"{"text":"Carrie\nfix\nwinged\nhatch\nmodel\ncat|one|two|body\nrepair|victory|three|four\nfive|museum|roof|six\nseven|eight|handle|talent","solved":true,"guesses":1}"#).unwrap();
+    let view = cloverleaf::pages::board_view(&board);
+    let (commands, words) = a.clover_preview(&view);
+    assert!(!commands.is_empty());
+    let words = String::from_utf8(words).unwrap();
+    for text in ["fix", "winged", "hatch", "model", "cat", "one", "two", "body", "repair", "victory", "three", "four", "five", "museum", "roof", "six", "seven", "eight", "handle", "talent"] {
+        assert!(words.contains(text), "preview includes {text}, including inward card words");
+    }
+    assert_eq!(before, (a.shared.digest(), a.ui_json(), a.cmds.iter().map(|f| f.to_bits()).collect::<Vec<_>>(), a.strs.clone(), a.outbox.clone()));
+    assert_eq!((a.q, a.angle, a.dpr), (1, std::f32::consts::FRAC_PI_2, 3.0));
+}
+
 /// Split an outbox into (net packets, other events).
 fn drain(a: &mut App) -> (Vec<Vec<u8>>, Vec<(u8, Vec<u8>)>) {
     let (mut net, mut ev) = (Vec::new(), Vec::new());

@@ -15,6 +15,7 @@ struct Globals {
     app: App,
     inbox: Vec<u8>,
     scratch: Vec<u8>,
+    preview: (Vec<f32>, Vec<u8>),
     probe: [f32; 4],
 }
 
@@ -41,7 +42,7 @@ pub extern "C" fn init(seed_lo: u32, seed_hi: u32) -> u32 {
     let app = App::new((seed_hi as u64) << 32 | seed_lo as u64);
     let id = app.device;
     unsafe {
-        *core::ptr::addr_of_mut!(G) = Some(Globals { app, inbox: Vec::new(), scratch: Vec::new(), probe: [0.0; 4] });
+        *core::ptr::addr_of_mut!(G) = Some(Globals { app, inbox: Vec::new(), scratch: Vec::new(), preview: (Vec::new(), Vec::new()), probe: [0.0; 4] });
     }
     id
 }
@@ -73,6 +74,25 @@ pub extern "C" fn cmd_ptr() -> *const f32 {
 #[no_mangle]
 pub extern "C" fn str_ptr() -> *const u8 {
     g().app.strs.as_ptr()
+}
+
+/// A read-only clover view (JSON in inbox) drawn with the gameplay renderer.
+/// Separate buffers keep the live board and its frame cache untouched.
+#[no_mangle]
+pub extern "C" fn clover_preview(len: u32) -> u32 {
+    let Some(view) = json::Json::parse(&inbox_str(len)) else { return 0 };
+    g().preview = g().app.clover_preview(&view);
+    g().preview.0.len() as u32
+}
+
+#[no_mangle]
+pub extern "C" fn preview_cmd_ptr() -> *const f32 {
+    g().preview.0.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn preview_str_ptr() -> *const u8 {
+    g().preview.1.as_ptr()
 }
 
 #[no_mangle]

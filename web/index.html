@@ -64,7 +64,7 @@
   .clover-row small { color: var(--dim); font-weight: 600; font-size: 14px; }
 
   #stage { position: relative; flex: 1; min-height: 0; }
-  canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
+  #c { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
   #stage:has(#lobby:not([hidden])) canvas { visibility: hidden; }
   #lobby { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; overflow-y: auto; }
   #lobby > div { max-width: 340px; margin-block: auto; text-align: center; }
@@ -193,27 +193,13 @@
   .logEntry { background: var(--menu-item); border-radius: 14px; padding: 10px 12px; }
   .logEntry summary { cursor: pointer; font-size: 15px; line-height: 1.35; }
   .logEntry .row { margin-top: 10px; }
-  /* A finished clover, read-only: each clue on its leaf with the two words
-     it linked, round the four answer cards (outward words only). Used by the
-     end-of-round recap and Past games. */
+  /* Read-only clovers use the gameplay canvas renderer in both the recap
+     and Past games, scaled as one square so the board keeps its proportions. */
   .mini { padding: 12px 10px 10px; border-radius: 16px; background: var(--menu-item); scroll-snap-align: start; }
   .mini .who { display: flex; align-items: center; justify-content: space-between; gap: 8px; font: 600 18px var(--serif); margin-bottom: 8px; }
   .badge { font: 700 13px var(--sans); border-radius: 99px; padding: 3px 10px; background: var(--chip); color: var(--fg); white-space: nowrap; }
   .badge.first { background: var(--go); color: var(--go-fg); }
-  .mclover { --card: min(92px, 22vw); display: grid; grid-template-columns: 1fr calc(2 * var(--card) + 4px) 1fr; grid-template-areas: ". t ." "l g r" ". b ."; align-items: center; justify-items: center; gap: 5px; }
-  .leafTag { background: var(--leaf); color: var(--leaf-fg); border-radius: 46% 46% 40% 40% / 62% 62% 38% 38%; padding: 4px 10px; text-align: center; max-width: 100%; overflow-wrap: anywhere; }
-  .leafTag b { display: block; font: 600 17px var(--serif); }
-  .leafTag small { display: block; font-size: 12px; opacity: .8; }
-  .mclover .leafTag.c1, .mclover .leafTag.c3 { writing-mode: vertical-rl; border-radius: 62% 38% 38% 62% / 46% 40% 40% 46%; padding: 10px 4px; }
-  .mclover .leafTag.c3 { transform: rotate(180deg); }
-  .mclover .c0 { grid-area: t; } .mclover .c1 { grid-area: r; } .mclover .c2 { grid-area: b; } .mclover .c3 { grid-area: l; } .mgrid { grid-area: g; }
-  .mgrid { display: grid; grid-template-columns: repeat(2, var(--card)); gap: 4px; }
-  .mc { position: relative; height: var(--card); background: #fcf8ee; border: 1px solid #cdbf9a; border-radius: 10px; color: #1c1710; font: 700 12px var(--sans); }
-  .mc span { position: absolute; white-space: nowrap; }
-  .mc .t { top: 5px; left: 50%; transform: translateX(-50%); }
-  .mc .b { bottom: 5px; left: 50%; transform: translateX(-50%); }
-  .mc .r { right: 4px; top: 50%; writing-mode: vertical-rl; transform: translateY(-50%); }
-  .mc .l { left: 4px; top: 50%; writing-mode: vertical-rl; transform: translateY(-50%) rotate(180deg); }
+  .mclover { display: block; width: 100%; height: auto; aspect-ratio: 1; }
   .mini .decoys { text-align: center; }
   .stats { display: flex; gap: 8px; }
   .stat { flex: 1; background: var(--menu-item); border-radius: 12px; padding: 6px 4px; text-align: center; font-size: 13px; color: var(--dim); }
