@@ -2110,6 +2110,76 @@ impl App {
         check.rejected(i, s, sc.cards[i].rot).then_some(s)
     }
 
+    /// The same leaves, centre, card faces and lettering in play and in a
+    /// read-only recap. All coordinates are in the clover's board frame.
+    fn clover_base(&mut self, board: M, editing: Option<u8>, glow: f32) {
+        for d in 0..4u8 {
+            self.xform(board.then(M::r(turn(d))));
+            let fill = if editing == Some(d) { self.pal.leaf_active } else { mix(self.pal.leaf, self.pal.leaf_glow, glow) };
+            self.cmds.extend_from_slice(&[C_LEAF, 290.0, 430.0, f32::from_bits(fill), f32::from_bits(self.pal.leaf_edge), 4.0]);
+        }
+        self.xform(board);
+        self.circle(0.0, 0.0, BOARD_HALF, self.pal.centre, self.pal.centre_edge, 4.0);
+    }
+
+    fn clover_clue(&mut self, leaf: M, clue: &str, keys: Option<&str>) {
+        self.xform(leaf);
+        let maxw = 2.0 * LEAF_HALF_W - 30.0;
+        if !clue.is_empty() {
+            self.text(0.0, Self::leaf_mid(), CLUE_SIZE, self.pal.clue_ink, F_SERIF, clue, maxw);
+        } else if let Some(k) = keys {
+            self.text(0.0, Self::leaf_mid(), 46.0, self.pal.keyword_ink, F_SANS_BOLD, k, maxw);
+        }
+    }
+
+    fn card_paper(&mut self, stroke: u32, lw: f32) {
+        self.rrect(-HALF, -HALF, CARD, CARD, 18.0, self.pal.paper, stroke, lw);
+    }
+
+    fn card_words(&mut self, pose: M, words: &[&str; 4]) {
+        let layout = self.card_word_layout(words);
+        for s in 0..4u8 {
+            self.xform(pose.then(M::r(turn(s))));
+            // Letters' tops sit WORD_EDGE from the edge at any size.
+            let (size, off) = layout[s as usize];
+            let y = -(HALF - WORD_EDGE - WORD_ASC * size);
+            self.text(off, y, size, self.pal.ink, F_SANS_BOLD, words[s as usize], 2.0 * WORD_REACH);
+        }
+    }
+
+    /// A finished/archived board, upright in a 900 × 900 square centred at
+    /// the origin. Rendering cannot change the active game, view, or buffers.
+    pub fn clover_preview(&mut self, view: &crate::json::Json) -> (Vec<f32>, Vec<u8>) {
+        let saved_cmds = core::mem::take(&mut self.cmds);
+        let saved_strs = core::mem::take(&mut self.strs);
+        // xform applies the live device's DPR; cancel it for board units.
+        let board = M::s(1.0 / self.dpr);
+        let solved = view.get("solved").bool().unwrap_or(false);
+        self.clover_base(board, None, 0.0);
+        for (d, leaf) in view.get("leaves").arr().iter().take(NSLOTS).enumerate() {
+            self.clover_clue(board.then(M::r(turn(d as u8))), leaf.get("clue").str().unwrap_or(""), leaf.get("words").str());
+        }
+        self.xform(board);
+        for s in 0..NSLOTS {
+            let (x, y) = slot_pos(s);
+            let (fill, stroke) = if solved { (0x9be7a8aa, 0xffffff60) } else { (0x0000002e, 0xffffff38) };
+            self.rrect(x - HALF - 6.0, y - HALF - 6.0, CARD + 12.0, CARD + 12.0, 18.0, fill, stroke, 3.0);
+        }
+        for (s, card) in view.get("cards").arr().iter().take(NSLOTS).enumerate() {
+            let (x, y) = slot_pos(s);
+            // Keep this device's reading size, capped where neighbours touch.
+            let pose = board.then(M::t(x, y)).then(M::s(self.zoom.min(ZOOM_TOUCH)));
+            self.xform(pose);
+            self.card_paper(if solved { 0x2fa84fff } else { self.pal.paper_edge }, if solved { 6.0 } else { 2.0 });
+            self.circle(0.0, 0.0, 11.0, 0xeee4c8ff, 0, 0.0);
+            let words = core::array::from_fn(|e| card.arr().get(e).and_then(|w| w.str()).unwrap_or(""));
+            self.card_words(pose, &words);
+        }
+        self.xform(board);
+        self.circle(0.0, 0.0, HUB_R, self.pal.hub, self.pal.paper, 3.0);
+        (core::mem::replace(&mut self.cmds, saved_cmds), core::mem::replace(&mut self.strs, saved_strs))
+    }
+
     pub fn render(&mut self) {
         self.cmds.clear();
         self.strs.clear();
@@ -2127,26 +2197,13 @@ impl App {
         // The clover: four heart-shaped leaves (one clue each) round a centre.
         let board = self.board_m();
         let glow = if self.motion { self.glow * (0.6 + 0.4 * (self.now as f32 / 180.0).sin()) } else { 0.0 };
-        let mid = Self::leaf_mid();
+        self.clover_base(board, self.editing, glow);
         for d in 0..4u8 {
-            self.xform(self.leaf_m_at(d, self.angle));
-            let fill = if self.editing == Some(d) { self.pal.leaf_active } else { mix(self.pal.leaf, self.pal.leaf_glow, glow) };
-            self.cmds.extend_from_slice(&[C_LEAF, 290.0, 430.0, f32::from_bits(fill), f32::from_bits(self.pal.leaf_edge), 4.0]);
-        }
-        self.xform(board);
-        self.circle(0.0, 0.0, BOARD_HALF, self.pal.centre, self.pal.centre_edge, 4.0);
-        for d in 0..4u8 {
-            self.xform(self.leaf_m_at(d, self.angle));
             let clue = sc.clues[d as usize].clone();
             let keys = self.keywords(&sc, d);
-            let maxw = 2.0 * LEAF_HALF_W - 30.0;
             // The writer sees "a & b" on an empty leaf as a prompt; once a clue
             // is written the two words are right there on the cards beside it.
-            match (clue.is_empty(), keys) {
-                (false, _) => self.text(0.0, mid, CLUE_SIZE, self.pal.clue_ink, F_SERIF, &clue, maxw),
-                (true, Some(k)) => self.text(0.0, mid, 46.0, self.pal.keyword_ink, F_SANS_BOLD, &k, maxw),
-                (true, None) => {}
-            }
+            self.clover_clue(self.leaf_m_at(d, self.angle), &clue, keys.as_deref());
         }
         self.xform(board);
         for s in 0..NSLOTS {
@@ -2206,7 +2263,7 @@ impl App {
                 None if solved => (0x2fa84fff, 6.0),
                 None => (self.pal.paper_edge, 2.0),
             };
-            self.rrect(-HALF, -HALF, CARD, CARD, 18.0, self.pal.paper, stroke, lw);
+            self.card_paper(stroke, lw);
             // Already rejected here, turned this way: a ✗ in the middle (where
             // no word goes), upright whatever the board's turn.
             if self.rejected_in(&sc, i).is_some() {
@@ -2218,14 +2275,7 @@ impl App {
             } else {
                 self.circle(0.0, 0.0, 11.0, 0xeee4c8ff, 0, 0.0);
             }
-            let layout = self.card_word_layout(&sc.words[i]);
-            for s in 0..4u8 {
-                self.xform(f.then(M::r(turn(s))));
-                // Letters' tops sit WORD_EDGE from the edge at any size.
-                let (size, off) = layout[s as usize];
-                let y = -(HALF - WORD_EDGE - WORD_ASC * size);
-                self.text(off, y, size, self.pal.ink, F_SANS_BOLD, sc.words[i][s as usize], 2.0 * WORD_REACH);
-            }
+            self.card_words(f, &sc.words[i]);
         }
 
         // Hub: tap to turn the board.

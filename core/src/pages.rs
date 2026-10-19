@@ -26,7 +26,7 @@ pub fn guesses(n: u32) -> String {
 /// A finished (or half-written) clover as read back in the recap and Past
 /// games, from its board text (see `Shared::export_board`) and how the
 /// guessing went: each clue on its leaf with the two words it linked, the
-/// four answer cards showing only their outward words, the decoys, a badge,
+/// four complete answer cards, the decoys, a badge,
 /// and whether it can be played again (all four clues written).
 pub fn board_view(b: &Json) -> Json {
     let text = b.get("text").str().unwrap_or("");
@@ -40,9 +40,7 @@ pub fn board_view(b: &Json) -> Json {
     let word = |spot: usize, edge: usize| cards.get(spot).and_then(|c| c.get(edge)).cloned().unwrap_or_default();
     // Leaf d links spot d and the next spot clockwise, both on side d.
     let leaves = (0..NSLOTS).map(|d| obj(vec![("clue", s(&clues[d])), ("words", s(&format!("{} + {}", word(d, d), word((d + 1) % NSLOTS, d))))])).collect();
-    // Edges facing out of the clover, per spot (top, right, bottom, left).
-    const OUT: [[usize; 2]; 4] = [[0, 3], [0, 1], [1, 2], [2, 3]];
-    let answer = (0..NSLOTS).map(|sp| Json::Arr((0..4).map(|e| s(&if OUT[sp].contains(&e) { word(sp, e) } else { String::new() })).collect())).collect();
+    let answer = (0..NSLOTS).map(|sp| Json::Arr((0..4).map(|e| s(&word(sp, e))).collect())).collect();
     let decoys = cards.iter().skip(NSLOTS).map(|c| c.join(" · ")).collect::<Vec<_>>();
     let decoys = if decoys.is_empty() { Json::Null } else { s(&format!("Decoy{}: {}", if decoys.len() > 1 { "s" } else { "" }, decoys.join("; "))) };
     let (badge, first) = match (solved, tries) {
@@ -55,6 +53,7 @@ pub fn board_view(b: &Json) -> Json {
         ("title", s(&format!("{name}'s clover"))),
         ("badge", s(&badge)),
         ("first", Json::Bool(first)),
+        ("solved", Json::Bool(solved)),
         ("leaves", Json::Arr(leaves)),
         ("cards", Json::Arr(answer)),
         ("decoys", decoys),
@@ -228,7 +227,7 @@ mod tests {
         assert_eq!(v.get("badge").str(), Some("☘ first try"));
         assert_eq!(v.get("leaves").arr()[0].get("words").str(), Some("a + e"), "top leaf: top words of spots 0 and 1");
         assert_eq!(v.get("leaves").arr()[3].get("words").str(), Some("p + d"), "left leaf: left words of spots 3 and 0");
-        assert_eq!(v.get("cards").arr()[0].to_string(), r#"["a","","","d"]"#, "spot 0 shows top and left");
+        assert_eq!(v.get("cards").arr()[0].to_string(), r#"["a","b","c","d"]"#, "all four words retain their answer orientation");
         assert_eq!(v.get("decoys").str(), Some("Decoy: q · r · s · t"));
         assert_eq!(v.get("playable").bool(), Some(false), "the left clue is empty");
     }
