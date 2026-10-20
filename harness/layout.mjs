@@ -203,6 +203,11 @@ try {
   await snap('03-lobby', A);
   await A.page.click('#menuBtn'); await A.page.waitForSelector('#menuSheet.open');
   await snap('04-menu', A);
+  await A.page.click('#connectionBtn'); await A.page.waitForSelector('#connectionSheet.open');
+  await A.page.waitForFunction(() => document.getElementById('connectionRows').children.length > 0);
+  await snap('04b-connection-details', A);
+  await A.page.click('#connectionClose');
+  await A.page.click('#menuBtn');
   await A.page.click('#helpMenuBtn'); await A.page.waitForSelector('#helpSheet.open');
   await snap('05-help', A);
   await A.page.click('#helpClose');

@@ -3,6 +3,7 @@
 
 import { agentTools, offerTools } from './agent.js';
 import { loadIceServers } from './rtc-config.js';
+import { createConnectionDiagnostics, connectionView } from './diagnostics.js';
 
 const params = new URLSearchParams(location.search);
 // No room in the link (and no shared boards): the home page, listing this
@@ -127,7 +128,7 @@ function paint(n, target = canvas, cmds = X.cmd_ptr(), strs = X.str_ptr(), camer
 
 // ---- outbox: network packets, UI requests ---------------------------------
 
-const stats = { joins: 0, sentPackets: 0, sentBytes: 0, recvPackets: 0, recvBytes: 0, frameMs: [], presses: 0, paints: 0 };
+const stats = { joins: 0, sentPackets: 0, sentBytes: 0, transportPackets: 0, transportBytes: 0, recvPackets: 0, recvBytes: 0, frameMs: [], presses: 0, paints: 0 };
 let net = null;
 
 let toastTimer = 0;
@@ -170,6 +171,7 @@ function drainOutbox() {
       // A change someone else made, or a move of this group: worded by the core.
       if (!solo && !home) happened(dec.decode(body));
     } else if (kind === 7) {
+      diagnostics.protocolMismatch();
       toast('A newer version of Shamrock is at this table. Reload to keep playing.', 1e9, ['Reload', () => location.reload()]);
     }
   }
@@ -574,6 +576,43 @@ $('redealBtn').onclick = () => openDeal(true);
 $('newGameBtn').onclick = () => { closeSheets(); act('newGame'); };
 $('unsubmitBtn').onclick = () => { closeSheets(); act('ready'); };
 $('freshBtn').onclick = () => { closeSheets(); freshTable(); };
+
+// Connection reports describe browser transport, separately from game state.
+async function refreshConnectionDetails() {
+  if (!$('connectionSheet').classList.contains('open')) return;
+  const report = await diagnostics.report();
+  const view = connectionView(report.current);
+  $('connectionHeadline').textContent = view.headline;
+  $('connectionAdvice').textContent = view.advice;
+  $('connectionRows').replaceChildren(...view.rows.flatMap(([label, value]) => [
+    Object.assign(document.createElement('dt'), { textContent: label }),
+    Object.assign(document.createElement('dd'), { textContent: value }),
+  ]));
+}
+$('connectionBtn').onclick = () => {
+  closeSheets();
+  $('connectionReport').hidden = true;
+  $('connectionSheet').classList.add('open');
+  void refreshConnectionDetails();
+};
+$('connectionClose').onclick = closeSheets;
+$('connectionCopy').onclick = async () => {
+  const text = JSON.stringify(await diagnostics.report(), null, 2);
+  try { await navigator.clipboard.writeText(text); toast('Connection report copied'); }
+  catch {
+    $('connectionReport').hidden = false;
+    $('connectionReport').value = text;
+    $('connectionReport').focus(); $('connectionReport').select();
+    toast('Select the report and copy it');
+  }
+};
+$('connectionSave').onclick = async () => {
+  const blob = new Blob([JSON.stringify(await diagnostics.report(), null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement('a'), { href: url, download: `shamrock-connection-${new Date().toISOString().replace(/[:.]/g, '-')}.json` });
+  a.click(); setTimeout(() => URL.revokeObjectURL(url), 10000);
+};
+setInterval(() => { void refreshConnectionDetails(); }, 2000);
 
 // Card size is per device (display only): bigger cards just overlap more.
 const zoomKey = 'shamrock:zoom';
@@ -1086,8 +1125,21 @@ $('homeMenuBtn').onclick = () => goTo('');
 // ---- network ----------------------------------------------------------------
 
 const peers = new Set();
-const joined = (id) => { peers.add(id); X.set_links(peers.size); X.on_peer_join(); drainOutbox(); renderUi(true); };
-const left = (id) => { peers.delete(id); X.set_links(peers.size); X.on_link_lost(linkId(id)); renderUi(true); };
+const diagnostics = createConnectionDiagnostics({
+  room: roomId, protocol: X.protocol(),
+  mode: home || solo ? 'inactive' : params.get('net') === 'local' ? 'local' : params.has('signal') ? 'websocket-signaling' : 'nostr',
+  sample: () => {
+    const s = ui();
+    return { connectedPeers: peers.size, seated: s.seated, phase: s.phase, round: s.round,
+      players: s.players.length, playersHere: s.players.filter((p) => !p.away).length,
+      sentPackets: stats.transportPackets, receivedPackets: stats.recvPackets,
+      sentBytes: stats.transportBytes, receivedBytes: stats.recvBytes,
+      state: JSON.stringify(scratchJson(X.digest())),
+    };
+  },
+});
+const joined = (id) => { peers.add(id); diagnostics.event('game-peer-joined', { connected: peers.size }); X.set_links(peers.size); X.on_peer_join(); drainOutbox(); renderUi(true); };
+const left = (id) => { peers.delete(id); diagnostics.event('game-peer-left', { connected: peers.size }); X.set_links(peers.size); X.on_link_lost(linkId(id)); renderUi(true); };
 
 async function connect() {
   const mode = params.get('net');
@@ -1103,7 +1155,10 @@ async function connect() {
     };
     addEventListener('pagehide', () => bc.postMessage({ bye: device }));
     hello();
-    return { send: (u8) => bc.postMessage({ bytes: u8, from: device }) };
+    return { send: (u8) => {
+      bc.postMessage({ bytes: u8, from: device });
+      if (peers.size) { stats.transportPackets++; stats.transportBytes += u8.length; }
+    } };
   }
   const signal = params.get('signal');
   const lib = signal ? await import('./vendor/trystero-ws.js') : await import('./vendor/trystero-nostr.js');
@@ -1111,14 +1166,15 @@ async function connect() {
   // picks 5 hobby relays by hashing the app id, and when they're down or
   // slow nobody meets until a reload happens to get through; these are
   // large, widely run open relays, all used at once.
-  const turnConfig = await loadIceServers().catch((e) => { console.warn(e.message); return []; });
-  const config = { appId: 'shamrock-p2p', relayConfig: { urls: signal ? [signal] : RELAYS }, turnConfig };
+  const turnConfig = await loadIceServers(diagnostics.settings).catch((e) => { console.warn(e.message); return []; });
+  const config = { appId: 'shamrock-p2p', relayConfig: { urls: signal ? [signal] : RELAYS }, turnConfig, rtcPolyfill: diagnostics.PeerConnection };
   let room, action, generation = 0;
   const enter = () => {
     const current = ++generation;
     room = lib.joinRoom(config, roomId, { onJoinError: ({ error }) => {
       if (current !== generation) return;
       stats.connectionError = error;
+      diagnostics.joinError(error);
       X.set_connection_failed(1);
       renderUi(true);
     } });
@@ -1127,6 +1183,8 @@ async function connect() {
     room.onPeerJoin = (id) => { if (current === generation) { stats.connectionError = null; joined(id); } };
     room.onPeerLeave = (id) => { if (current === generation) left(id); };
     stats.joins++;
+    diagnostics.event('room-enter', { generation });
+    diagnostics.trackRelays(lib.getRelaySockets);
   };
   enter();
   // Trystero retries announcements, sockets and failed peer connections.
@@ -1144,7 +1202,10 @@ async function connect() {
   };
   addEventListener('pagehide', leave);
   addEventListener('pageshow', (e) => { if (e.persisted && !room) enter(); });
-  return { send: (u8) => peers.size && action?.send(u8) };
+  return { send: (u8) => {
+    if (!peers.size || !action) return;
+    void action.send(u8).then(() => { stats.transportPackets++; stats.transportBytes += u8.length; }, () => diagnostics.event('game-send-failed'));
+  } };
 }
 // ?relays=host1,host2 overrides the list (for testing from a phone).
 const RELAYS = params.get('relays')?.split(',').map((h) => (h.includes('://') ? h : `wss://${h}`))
@@ -1198,7 +1259,10 @@ if (!solo && !home && !inviteError) {
 }
 
 // Solo play (a share link) never connects to anyone.
-if (!solo && !home && !inviteError) connect().then((n) => { net = n; }, (e) => toast(`Can't connect: ${e.message}`, 10000));
+if (!solo && !home && !inviteError) connect().then((n) => { net = n; }, (e) => {
+  diagnostics.failed(e); X.set_connection_failed(1); renderUi(true);
+  toast(`Can't connect: ${e.message}`, 10000);
+});
 
 // Returning to this room re-takes your seat; a first visit asks. Wait a
 // moment first so we've heard the table's state (and existing names).
@@ -1299,6 +1363,7 @@ const tools = agentTools({
 if (!home) offerTools(tools);
 
 window.__cl = {
+  connectionReport: () => diagnostics.report(),
   chaos,
   holds: () => scratchJson(X.holds()),
   tools: Object.fromEntries(tools.map((t) => [t.name, t.run])),

@@ -52,7 +52,14 @@ try {
     const pages = await Promise.all([page(room, { delay: true }), page(room, { delay: true })]);
     await connected(pages);
     for (const p of pages) assert.equal(await p.evaluate(() => __cl.stats.joins), 1);
+    for (const p of pages) {
+      const report = await p.evaluate(() => __cl.connectionReport());
+      assert.equal(report.current.settings.turnServers, 0);
+      assert(report.current.attempts.some((a) => a.state === 'connected' && a.path?.kind === 'direct'));
+      assert(report.current.relays.some((r) => r.state === 'open'));
+    }
     console.log('PASS slow negotiation survives past the old 12-second room reset');
+    console.log('PASS diagnostics distinguish a selected direct path from unconfigured TURN');
     await close(pages);
   }
   {
@@ -63,6 +70,11 @@ try {
       assert.equal(await p.evaluate(() => __cl.peerCount()), 0);
       assert.match(await p.evaluate(() => __cl.stats.connectionError), /after exchanging SDP/);
       assert.equal(await p.evaluate(() => __cl.stats.joins), 1);
+      const report = await p.evaluate(() => __cl.connectionReport());
+      assert(report.current.discovered > 0);
+      assert.equal(report.current.app.connectedPeers, 0);
+      assert(report.current.events.some((e) => e.kind === 'join-error' && e.category === 'route-failed'));
+      assert(!JSON.stringify(report).includes(room), 'reports must not contain raw room names');
       await p.evaluate(() => { window.__blockIce = false; });
     }
     console.log('PASS a real failed ICE negotiation reports connection failure, not an empty room');
@@ -78,8 +90,39 @@ try {
     const room = `config-down-${randomUUID()}`;
     const pages = await Promise.all([page(room, { config: { iceServersUrl: './missing-credentials' } }), page(room)]);
     await connected(pages);
+    const report = await pages[0].evaluate(() => __cl.connectionReport());
+    assert.equal(report.current.settings.state, 'failed');
+    assert.equal(report.current.settings.source, 'credentials');
+    assert.equal(report.current.settings.status, 404);
+    await pages[0].reload();
+    await pages[0].waitForFunction(() => window.__cl);
+    const reloaded = await pages[0].evaluate(() => __cl.connectionReport());
+    assert.equal(reloaded.previous[0].session, report.current.session);
+    assert.equal(reloaded.previous[0].settings.status, 404);
     console.log('PASS unavailable relay credentials still allow a direct connection');
+    console.log('PASS a reload preserves the previous connection report');
     await close(pages);
+  }
+  {
+    await server.stopRelay();
+    const p = await page(`discovery-down-${randomUUID()}`);
+    await p.evaluate(() => __cl.watch());
+    await p.click('#menuBtn');
+    await p.click('#connectionBtn');
+    await p.waitForFunction(() => document.getElementById('connectionHeadline').textContent.includes('Cannot reach room discovery'), null, { timeout: 20000 });
+    assert.equal((await p.evaluate(() => __cl.connectionReport())).current.discovered, 0);
+    // Clipboard denial must leave a selectable report on the phone.
+    await p.evaluate(() => { Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('denied'); } } }); });
+    await p.click('#connectionCopy');
+    await p.waitForFunction(() => !document.getElementById('connectionReport').hidden);
+    assert.equal(JSON.parse(await p.inputValue('#connectionReport')).current.schema, 1);
+    const download = p.waitForEvent('download');
+    await p.click('#connectionSave');
+    assert.match((await download).suggestedFilename(), /^shamrock-connection-.*\.json$/);
+    await server.startRelay();
+    await p.waitForFunction(async () => (await __cl.connectionReport()).current.relays.some((r) => r.state === 'open'), null, { timeout: 40000 });
+    console.log('PASS discovery outage, clipboard fallback, report download and relay recovery');
+    await close([p]);
   }
   if (process.env.TURN_BIN) {
     await mkdir(new URL('./out/', import.meta.url), { recursive: true });
@@ -115,7 +158,14 @@ try {
     await pages[0].evaluate(() => __cl.joinAs('Ana'));
     await pages[1].evaluate(() => __cl.joinAs('Ben'));
     await Promise.all(pages.map((p) => p.waitForFunction(() => __cl.ui().dealable.length === 2)));
+    for (const p of pages) {
+      const report = await p.evaluate(() => __cl.connectionReport());
+      assert.equal(report.current.settings.turnServers, 1);
+      assert(report.current.attempts.some((a) => a.state === 'connected' && a.path?.kind === 'turn'));
+      for (const secret of [credential, '127.0.0.1', 'Ana', 'Ben', room]) assert(!JSON.stringify(report).includes(secret), `report leaked ${secret}`);
+    }
     console.log('PASS game state syncs over TURN/TCP with direct connections disabled');
+    console.log('PASS diagnostics verify TURN is actually in use without exposing credentials or ICE addresses');
     await close(pages);
   } else console.log('SKIP TURN transport (set TURN_BIN to a coturn executable)');
   assert.deepEqual(errors, []);

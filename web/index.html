@@ -140,6 +140,10 @@
   .sheet p { margin: 0; color: var(--dim); font-size: 16px; }
   .sheet input:not([type=checkbox]), .sheet textarea { font: 600 20px var(--sans); color: var(--fg); background: var(--field); border: 2px solid var(--line); border-radius: 14px; padding: 12px 14px; width: 100%; }
   .sheet textarea { resize: vertical; min-height: 120px; }
+  #connectionRows { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 10px 14px; margin: 0; font-size: 15px; }
+  #connectionRows dt { color: var(--dim); }
+  #connectionRows dd { margin: 0; }
+  #connectionReport { font: 12px monospace; height: 160px; white-space: pre; overflow: auto; }
   .checkField { display: flex; align-items: center; gap: 10px; min-height: 44px; cursor: pointer; }
   .checkField input { width: 22px; height: 22px; flex: none; accent-color: var(--go); }
   .roundPlayer { display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 10px 12px; border-radius: 14px; background: var(--menu-item); cursor: pointer; }
@@ -313,6 +317,7 @@
     <div id="tipText" class="tip"></div>
     <button class="menuBtn" id="helpMenuBtn">How to play well</button>
     <div class="row"><button class="menuBtn" id="logMenuBtn">Past games…</button><button class="menuBtn" id="homeMenuBtn">All my tables</button></div>
+    <button class="menuBtn" id="connectionBtn">Connection details…</button>
     <div id="tableItems">
     <h2>Table</h2>
     <div class="row"><button class="menuBtn" id="copyLink">Copy invite link</button></div>
@@ -331,6 +336,19 @@
     <div class="list" id="playerList"></div>
     </div>
     <button id="closeMenu">Close</button>
+  </div>
+</div>
+<div class="overlay" id="connectionSheet">
+  <div class="sheet" role="dialog" aria-labelledby="connectionTitle">
+    <h2 id="connectionTitle">Connection details</h2>
+    <strong id="connectionHeadline" aria-live="polite">Checking connection…</strong>
+    <p id="connectionAdvice"></p>
+    <dl id="connectionRows"></dl>
+    <p class="tip">Reports include connection events and the last two page visits in this tab. They omit names, clues, invite links, IP addresses and credentials. Nothing is uploaded automatically.</p>
+    <button class="go" id="connectionCopy">Copy report</button>
+    <button id="connectionSave">Save report file</button>
+    <textarea id="connectionReport" aria-label="Connection report to copy" readonly hidden></textarea>
+    <button id="connectionClose">Close</button>
   </div>
 </div>
 <div class="overlay" id="cloverSheet">
