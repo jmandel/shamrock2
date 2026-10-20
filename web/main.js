@@ -2,7 +2,7 @@
 // hit-testing, animation and drawing decisions live in core.wasm (Rust).
 
 import { agentTools, offerTools } from './agent.js';
-import { loadIceServers } from './rtc-config.js';
+import { loadIceServers, discoveryTime, refreshDiscoveryClock } from './rtc-config.js';
 import { createConnectionDiagnostics, connectionView } from './diagnostics.js';
 
 const params = new URLSearchParams(location.search);
@@ -1167,6 +1167,7 @@ async function connect() {
   // slow nobody meets until a reload happens to get through; these are
   // large, widely run open relays, all used at once.
   const turnConfig = await loadIceServers(diagnostics.settings).catch((e) => { console.warn(e.message); return []; });
+  lib.setDiscoveryClock?.(discoveryTime);
   const config = { appId: 'shamrock-p2p', relayConfig: { urls: signal ? [signal] : RELAYS }, turnConfig, rtcPolyfill: diagnostics.PeerConnection };
   let room, action, generation = 0;
   const enter = () => {
@@ -1187,12 +1188,33 @@ async function connect() {
     diagnostics.trackRelays(lib.getRelaySockets);
   };
   enter();
+  let clockPending = false, clockSuspect = false;
+  let clockWall = Date.now(), clockTick = performance.now();
+  const refreshClock = async () => {
+    if (!lib.setDiscoveryClock || clockPending || !navigator.onLine || !room) return;
+    clockPending = true;
+    try { diagnostics.clock(await refreshDiscoveryClock()); clockSuspect = false; }
+    catch { diagnostics.event('clock-refresh-failed'); }
+    finally { clockPending = false; }
+  };
+  // Some browsers pause their monotonic clock during system sleep. Resample
+  // after foregrounding, reconnecting, or a wall/monotonic clock discontinuity.
+  if (lib.setDiscoveryClock) setInterval(() => {
+    const wall = Date.now(), tick = performance.now();
+    if (Math.abs((wall - clockWall) - (tick - clockTick)) > 5000) clockSuspect = true;
+    clockWall = wall; clockTick = tick;
+    if (clockSuspect && document.visibilityState === 'visible') void refreshClock();
+  }, 5000);
   // Trystero retries announcements, sockets and failed peer connections.
   // Leaving every 12 seconds cancelled ICE negotiation before its own timeout
   // and suppressed the useful "found a peer, couldn't connect" error.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && navigator.onLine) lib.resumeRelayReconnection?.();
+    if (document.visibilityState === 'visible' && navigator.onLine) {
+      lib.resumeRelayReconnection?.();
+      void refreshClock();
+    }
   });
+  addEventListener('online', () => { void refreshClock(); });
   const leave = () => {
     if (!room) return;
     ++generation;
@@ -1201,7 +1223,7 @@ async function connect() {
     for (const id of [...peers]) left(id);
   };
   addEventListener('pagehide', leave);
-  addEventListener('pageshow', (e) => { if (e.persisted && !room) enter(); });
+  addEventListener('pageshow', (e) => { if (e.persisted && !room) { enter(); void refreshClock(); } });
   return { send: (u8) => {
     if (!peers.size || !action) return;
     void action.send(u8).then(() => { stats.transportPackets++; stats.transportBytes += u8.length; }, () => diagnostics.event('game-send-failed'));
