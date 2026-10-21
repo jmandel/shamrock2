@@ -1,35 +1,14 @@
 // Deterministic Nostr fixture: ephemeral events expire, and subscriptions honor
 // `since`. This catches clock skew that the ordinary WS-signaling harness misses.
 import assert from 'node:assert/strict';
-import { WebSocketServer } from 'ws';
 import { chromium, firefox } from 'playwright';
 import { serve } from './serve.mjs';
+import { serveNostr } from './nostr-relay.mjs';
 import { randomUUID } from 'node:crypto';
 
 const server = await serve({ port: 8867, relayPort: 8868, quiet: true });
-const relay = new WebSocketServer({ port: 8869, host: '127.0.0.1' });
-const subscriptions = new Map();
-const counters = { accepted: 0, expired: 0 };
-relay.on('connection', (socket) => {
-  const subs = new Map(); subscriptions.set(socket, subs);
-  socket.on('close', () => subscriptions.delete(socket));
-  socket.on('message', (bytes) => {
-    const [type, value, ...filters] = JSON.parse(bytes);
-    if (type === 'REQ') { subs.set(value, filters); socket.send(JSON.stringify(['EOSE', value])); }
-    else if (type === 'CLOSE') subs.delete(value);
-    else if (type === 'EVENT') {
-      const valid = Math.abs(value.created_at - Date.now() / 1000) < 5;
-      socket.send(JSON.stringify(['OK', value.id, valid, valid ? '' : 'invalid: ephemeral event expired']));
-      if (!valid) { counters.expired++; return; }
-      counters.accepted++;
-      for (const [recipient, peerSubscriptions] of subscriptions.entries()) {
-        for (const [id, filters] of peerSubscriptions) if (filters.some((f) => value.created_at >= f.since && f.kinds.includes(value.kind) && value.tags.some(([key, tag]) => key === 'x' && f['#x'].includes(tag)))) {
-          recipient.send(JSON.stringify(['EVENT', id, value]));
-        }
-      }
-    }
-  });
-});
+const relay = await serveNostr({ port: 8869 });
+const { counters } = relay;
 const chrome = await chromium.launch({ executablePath: process.env.CHROMIUM ?? undefined });
 const fox = process.env.FIREFOX ? await firefox.launch({ executablePath: process.env.FIREFOX }) : null;
 const errors = [];
@@ -76,7 +55,6 @@ try {
   assert.deepEqual(errors, []);
 } finally {
   await chrome.close(); await fox?.close();
-  for (const socket of relay.clients) socket.terminate();
-  await new Promise((resolve) => relay.close(resolve));
+  await relay.close();
   await server.close();
 }

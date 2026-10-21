@@ -58,6 +58,8 @@ node harness/serve.mjs # prints a URL
 
 The checked-in configuration has no TURN service enabled. Failed credential requests fall back to direct connections. Discovery and peer retries are handled by Trystero; the page does not repeatedly leave the room during negotiation. If discovery succeeds but a peer cannot connect, the status says **Couldn't connect** and suggests another network, instead of waiting indefinitely for someone who is already there. TURN relays encrypted WebRTC traffic; game state still lives on the players' devices.
 
+An open discovery socket can silently stop carrying messages. The page checks Nostr sockets after a peer leaves, on return to the foreground, and after 30 seconds without a message. An empty lookup must receive a reply within 15 seconds of active time; otherwise that socket closes so Trystero reconnects, resubscribes and announces again. Existing peer connections and in-progress negotiations stay intact. Checks pause while hidden or offline, and connection reports record `relay-health-timeout` when a socket needs replacement.
+
 **How a game goes** (So Clover! rules, everyone at once):
 
 1. **Join.** Your first visit asks for a name: tap Join, or *Just watch*. Names are identities, so picking a name that's already at the table takes over that seat (to switch devices, or to debug). Your device remembers your name for this room.
@@ -123,6 +125,7 @@ node harness/invites.mjs            # shared group link, name picker, partial gr
 node harness/connections.mjs        # delayed/blocked ICE, recovery and credential failure; TURN_BIN=/path/to/turnserver also tests real TURN/TCP
 node harness/diagnostics.mjs        # rejection categories, clock comparison, cached headers and report privacy
 node harness/discovery.mjs          # real Nostr exchange with clocks 3 minutes apart; FIREFOX=/path/to/playwright-firefox adds cross-browser coverage
+node harness/reconnect.mjs          # two clueing players: reopen, Home/re-enter, silent discovery sockets, healthy peers and background grace; PUBLIC=1 also tests public relays
 node harness/longnames.mjs          # 24-character names on a 360 px phone: the status strip still fits
 node harness/layout.mjs             # every screen and sheet, stress data, 6 sizes: generic layout faults (ONLY=state)
 node harness/idle.mjs               # what an idle table costs: CPU, frames and paints per second (IDLE_S=20)
