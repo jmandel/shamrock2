@@ -1538,7 +1538,8 @@ impl App {
     /// clue is drawn (vertical for side leaves). The board doesn't turn.
     pub fn edit_clue(&mut self, d: u8) {
         self.editing = Some(d);
-        let f = self.leaf_m_at(d, self.q as f32 * FRAC_PI_2).then(M::t(0.0, Self::leaf_mid()));
+        // Match the leaf being drawn, including a drag or an unfinished turn.
+        let f = self.leaf_m_at(d, self.angle).then(M::t(0.0, Self::leaf_mid()));
         let (x, y) = f.apply(0.0, 0.0);
         let angle = f.angle();
         let k = self.scale();

@@ -1334,6 +1334,10 @@ function step(t) {
   const fresh = !X.unchanged() || shell !== painted;
   if (fresh) {
     paint(n);
+    // Touch drags can rotate the clover without blurring its input. Follow
+    // the same leaf every painted frame; openClueEditor preserves the draft
+    // and selection when only its geometry changes.
+    if (editing >= 0) X.edit_clue(editing);
     painted = shell;
     stats.paints++;
     if (stats.frameMs.push(performance.now() - t0) > 600) stats.frameMs.shift();
