@@ -4,6 +4,7 @@
 import { agentTools, offerTools } from './agent.js';
 import { loadIceServers, discoveryTime, refreshDiscoveryClock } from './rtc-config.js';
 import { createConnectionDiagnostics, connectionView } from './diagnostics.js';
+import { watchNostrRelays } from './nostr-health.js';
 
 const params = new URLSearchParams(location.search);
 // No room in the link (and no shared boards): the home page, listing this
@@ -1169,6 +1170,7 @@ async function connect() {
   const turnConfig = await loadIceServers(diagnostics.settings).catch((e) => { console.warn(e.message); return []; });
   lib.setDiscoveryClock?.(discoveryTime);
   const config = { appId: 'shamrock-p2p', relayConfig: { urls: signal ? [signal] : RELAYS }, turnConfig, rtcPolyfill: diagnostics.PeerConnection };
+  const relayHealth = signal ? null : watchNostrRelays(lib.getRelaySockets, diagnostics.event);
   let room, action, generation = 0;
   const enter = () => {
     const current = ++generation;
@@ -1182,10 +1184,15 @@ async function connect() {
     action = room.makeAction('m');
     action.onMessage = (data, { peerId }) => { if (current === generation) receive(new Uint8Array(data), linkId(peerId)); };
     room.onPeerJoin = (id) => { if (current === generation) { stats.connectionError = null; joined(id); } };
-    room.onPeerLeave = (id) => { if (current === generation) left(id); };
+    room.onPeerLeave = (id) => {
+      if (current !== generation) return;
+      left(id);
+      relayHealth?.check();
+    };
     stats.joins++;
     diagnostics.event('room-enter', { generation });
     diagnostics.trackRelays(lib.getRelaySockets);
+    if (document.visibilityState === 'visible' && navigator.onLine) relayHealth?.resume();
   };
   enter();
   let clockPending = false, clockSuspect = false;
@@ -1211,12 +1218,18 @@ async function connect() {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && navigator.onLine) {
       lib.resumeRelayReconnection?.();
+      relayHealth?.resume();
       void refreshClock();
-    }
+    } else relayHealth?.pause();
   });
-  addEventListener('online', () => { void refreshClock(); });
+  addEventListener('online', () => {
+    if (document.visibilityState === 'visible') relayHealth?.resume();
+    void refreshClock();
+  });
+  addEventListener('offline', () => relayHealth?.pause());
   const leave = () => {
     if (!room) return;
+    relayHealth?.pause();
     ++generation;
     room.leave();
     room = action = null;
