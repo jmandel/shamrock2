@@ -21,7 +21,9 @@ const enc = new TextEncoder(), dec = new TextDecoder();
 const remember = (key, value) => { try { value == null ? localStorage.removeItem(key) : localStorage.setItem(key, value); return true; } catch { return false; } };
 const recall = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
 
-const { instance } = await WebAssembly.instantiateStreaming(fetch('core.wasm'), {});
+// A page reload does not invalidate a fetch()'s fresh HTTP cache entry.
+// Revalidate the engine so Reload can actually resolve a protocol mismatch.
+const { instance } = await WebAssembly.instantiateStreaming(fetch('core.wasm', { cache: 'no-cache' }), {});
 // Frames run only while something is changing (see the frame loop below):
 // every call into the core wakes them, except drawing and the questions that
 // change nothing. (One missed here costs at most a 250 ms wait, not a stale screen.)

@@ -1,6 +1,6 @@
 // Browser transport diagnostics only. Never retain SDP, ICE addresses,
 // credentials, room links, player names, clues, or packet contents.
-const VERSION = '2026-10-20-connections-3';
+const VERSION = '2026-10-20-connections-4';
 const STORE = 'shamrock:connection-reports:v1';
 const MAX_EVENTS = 160, MAX_ATTEMPTS = 48;
 const types = new Set(['host', 'srflx', 'prflx', 'relay']);
