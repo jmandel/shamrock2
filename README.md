@@ -60,6 +60,8 @@ The checked-in configuration has no TURN service enabled. Failed credential requ
 
 An open discovery socket can silently stop carrying messages. The page checks Nostr sockets after a peer leaves, on return to the foreground, and after 30 seconds without a message. An empty lookup must receive a reply within 15 seconds of active time; otherwise that socket closes so Trystero reconnects, resubscribes and announces again. Existing peer connections and in-progress negotiations stay intact. Checks pause while hidden or offline, and connection reports record `relay-health-timeout` when a socket needs replacement.
 
+Each page load revalidates `core.wasm` with the server. The version-warning Reload button therefore fetches an updated engine even when the old one is still fresh in the browser's HTTP cache; an unchanged engine can reuse its cached bytes after a 304 response. Saved tables and clues survive the reload.
+
 **How a game goes** (So Clover! rules, everyone at once):
 
 1. **Join.** Your first visit asks for a name: tap Join, or *Just watch*. Names are identities, so picking a name that's already at the table takes over that seat (to switch devices, or to debug). Your device remembers your name for this room.
@@ -126,6 +128,7 @@ node harness/connections.mjs        # delayed/blocked ICE, recovery and credenti
 node harness/diagnostics.mjs        # rejection categories, clock comparison, cached headers and report privacy
 node harness/discovery.mjs          # real Nostr exchange with clocks 3 minutes apart; FIREFOX=/path/to/playwright-firefox adds cross-browser coverage
 node harness/reconnect.mjs          # two clueing players: reopen, Home/re-enter, silent discovery sockets, healthy peers and background grace; PUBLIC=1 also tests public relays
+node harness/updates.mjs            # actual cached protocol-4 engine → newer peer → Reload; uses git history, or OLD_WASM=/path/to/protocol4.wasm
 node harness/longnames.mjs          # 24-character names on a 360 px phone: the status strip still fits
 node harness/layout.mjs             # every screen and sheet, stress data, 6 sizes: generic layout faults (ONLY=state)
 node harness/idle.mjs               # what an idle table costs: CPU, frames and paints per second (IDLE_S=20)
