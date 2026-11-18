@@ -6,10 +6,11 @@ export const discoveryTime = () => serverClock ? serverClock.ms + performance.no
 function sampleClock(response, start, tick) {
   const duration = performance.now() - tick;
   const date = Date.parse(response.headers.get('Date'));
-  const age = Number(response.headers.get('Age') || 0);
-  // HTTP Date has one-second precision; Age accounts for a cached reply.
-  if (!Number.isFinite(date) || !Number.isFinite(age) || age < 0 || Math.abs(Date.now() - start - duration) >= 1000) return null;
-  serverClock = { ms: date + age * 1000 + 500, tick: tick + duration / 2 };
+  // HTTP Date has one-second precision. Ignore Age: GitHub Pages' CDN stamps
+  // Date when it serves a cached copy and still sends Age (up to 600 s), so
+  // adding it would put each device's clock ahead by its copy's age.
+  if (!Number.isFinite(date) || Math.abs(Date.now() - start - duration) >= 1000) return null;
+  serverClock = { ms: date + 500, tick: tick + duration / 2 };
   return { clockOffsetMs: Math.round((serverClock.ms - start - duration / 2) / 1000) * 1000, clockUncertaintyMs: Math.ceil(duration / 2) + 1000, discoveryClock: 'server' };
 }
 
