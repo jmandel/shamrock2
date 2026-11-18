@@ -29,9 +29,10 @@ try {
   Date.now = originalNow;
   assert(Math.abs(discoveryTime() - originalNow()) < 2000);
 
-  // Cached HTTP responses are not evidence of a wrong device clock.
+  // GitHub Pages' CDN stamps Date when serving a cached copy and still sends
+  // Age; the copy's age is not evidence of a wrong device clock.
   Date.now = originalNow;
-  globalThis.fetch = async () => new Response('{"iceServers":[]}', { headers: { Date: new Date(timestamp - 90000).toUTCString(), Age: '90' } });
+  globalThis.fetch = async () => new Response('{"iceServers":[]}', { headers: { Date: new Date(timestamp).toUTCString(), Age: '400' } });
   await loadIceServers((value) => { report = value; });
   assert(Math.abs(report.clockOffsetMs) < 2000);
 
